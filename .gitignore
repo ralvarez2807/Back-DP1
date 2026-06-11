@@ -1,0 +1,81 @@
+# ============================================================
+# BUILD OUTPUTS
+# ============================================================
+target/
+build/
+!**/src/main/**/target/
+!**/src/test/**/target/
+!**/src/main/**/build/
+!**/src/test/**/build/
+!.mvn/wrapper/maven-wrapper.jar
+
+*.class
+*.jar
+!gradle-wrapper.jar
+*.war
+*.ear
+*.nar
+
+# ============================================================
+# INTELLIJ IDEA
+# ============================================================
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# ============================================================
+# VS CODE
+# ============================================================
+.vscode/
+# Si quieres compartir extensiones recomendadas con el equipo,
+# elimina la línea anterior y agrega esta en su lugar:
+# .vscode/*
+# !.vscode/extensions.json
+
+# ============================================================
+# KOTLIN
+# ============================================================
+.kotlin/
+
+# ============================================================
+# ECLIPSE / NETBEANS (por si alguien los usa)
+# ============================================================
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# ============================================================
+# SECRETS — NUNCA SUBIR
+# ============================================================
+.env
+.env.local
+.env.*.local
+secrets.env
+*.pem
+*.key
+*.p12
+*.jks
+application-local.yml
+application-local.properties
+
+# ============================================================
+# LOGS
+# ============================================================
+*.log
+logs/
+
+# ============================================================
+# OS
+# ============================================================
+.DS_Store
+Thumbs.db

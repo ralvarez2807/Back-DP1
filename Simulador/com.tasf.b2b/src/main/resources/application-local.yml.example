@@ -1,0 +1,18 @@
+# ── Configuración LOCAL de desarrollo ────────────────────────────────────────
+# Copia este archivo a application-local.yml (está en .gitignore — no se sube al repo).
+#
+# IntelliJ: en Run/Debug Configuration → Spring Boot → Active profiles → añadir "local"
+# O bien: en la misma configuración → Environment variables → JWT_SECRET=<valor>
+#
+# Este secreto es SOLO para desarrollo local. En producción usar una variable de
+# entorno real con un secreto generado de forma segura:
+#   Linux/macOS: export JWT_SECRET=$(openssl rand -base64 32)
+#   Windows:     $env:JWT_SECRET = [Convert]::ToBase64String((1..32 | %{ Get-Random -Max 256 }))
+
+jwt:
+  # Secreto de ejemplo — NO usar en producción
+  secret: dGFzZi1zaW11bGFkb3Itc2VjcmV0LWtleS0yMDI2LXYx
+
+app:
+  cors:
+    allowed-origins: http://localhost:5173,http://localhost:3000

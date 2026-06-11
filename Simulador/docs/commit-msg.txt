@@ -1,0 +1,21 @@
+Simulacion 5D visual: aviones por reloj simulado, fix OOM y accesos del mapa
+
+- El snapshot expone speedFactor y el front extrapola el reloj simulado
+  (hooks/useSimNow.ts); los aviones del mapa se derivan del snapshot
+  (depTime -> arrTime) en vez de eventos WS con duracion fija, asi se
+  congelan al pausar, retoman al reanudar y aparecen al unirse a una
+  sesion en curso.
+- Feeds de BD (envios/cancelaciones) acotados a [simStart, simEnd] con
+  paginacion perezosa: antes hacian findAll() de toda la tabla al crear
+  la sesion y la JVM moria con OutOfMemoryError al crear la simulacion.
+- GET /api/v1/data/** ahora es publico: MapProvider pide aeropuertos y
+  rutas sin JWT al cargar la pagina; el 401 dejaba el mapa sin hubs y
+  sin aviones.
+- .env.example documenta VITE_WS_BASE_URL=ws://localhost:8080 (el valor
+  con path duplicaba la URL del WS y apuntaba al proxy que no maneja el
+  upgrade).
+- Incluye paneles y servicios del pase anterior aun sin commitear
+  (DataLoadView, TrackingPanel, CircunstanciasPanel, snapshot/tracking/
+  disruption services, NetworkStateProvider).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

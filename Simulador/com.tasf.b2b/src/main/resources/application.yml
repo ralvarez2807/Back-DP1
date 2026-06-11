@@ -1,0 +1,64 @@
+server:
+  port: 8080
+  tomcat:
+    max-http-form-post-size: 25MB
+
+# ── Archivos de datos ──────────────────────────────────────────────────────────
+# Todos los archivos viven en src/main/resources/.
+# Cuando IntelliJ compila, los copia a target/classes/, que es el classpath.
+simulation:
+  airports-file: c.1inf54.26.1.v1.Aeropuerto.husos.v1.20250818__estudiantes.txt
+  flights-file: planes_vuelo.txt
+  shipment-dir: _envios_preliminar_
+  cancellations-file: cancelaciones.txt
+
+# ── JWT ────────────────────────────────────────────────────────────────────────
+# secret: string en Base64 de al menos 256 bits (32 bytes) para HS256.
+# IMPORTANTE: en producción usar una variable de entorno, no hardcodearlo aquí.
+jwt:
+  # Producción: exportar JWT_SECRET como variable de entorno (base64, ≥256 bits).
+  # Desarrollo: copiar application-dev.yml.example a application-dev.yml y definir el secreto ahí.
+  secret: ${JWT_SECRET}
+  expiration-ms: 3600000  # 1 hora en milisegundos
+
+# Orígenes permitidos para WebSocket y CORS.
+# Producción: exportar CORS_ALLOWED_ORIGINS=https://tu-dominio.com
+# Desarrollo: http://localhost:5173 (Vite) o el puerto que use el front
+app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000}
+
+# ── Base de datos ──────────────────────────────────────────────────────────────
+spring:
+  config:
+    import: "optional:file:.env[.properties]"
+  datasource:
+    url:      ${DB_URL:jdbc:postgresql://localhost:5432/tasf}
+    username: ${DB_USER:tasf}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none        # el esquema se gestiona con schema.sql manualmente
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 500
+        order_inserts: true
+  sql:
+    init:
+      mode: never           # no ejecutar schema.sql automáticamente al arrancar
+  servlet:
+    multipart:
+      max-file-size: 25MB
+      max-request-size: 25MB
+
+# ── Logs ───────────────────────────────────────────────────────────────────────
+logging:
+  level:
+    com.tasf.b2b: INFO
+    org.springframework.security: WARN        # evitar spam de security en consola
+    org.springframework.web: WARN             # warnings del dispatcher y MVC
+    org.springframework.web.socket: INFO      # conexiones WebSocket
+    org.hibernate.SQL: WARN                   # subir a DEBUG para ver queries

@@ -1,0 +1,105 @@
+### ─────────────────────────────────────────────────────────────────────────
+### TASF Simulador — pruebas manuales
+### Ejecutar en orden: 1 → 2 → 3+
+### ─────────────────────────────────────────────────────────────────────────
+
+### Variables (editar aquí si cambia algo)
+@base     = http://localhost:8080/api/v1
+@username = admin
+@password = tasf2026
+
+### ─────────────────────────────────────────────────────────────────────────
+### 1. LOGIN — copiar el accessToken de la respuesta y pegarlo en @token
+### ─────────────────────────────────────────────────────────────────────────
+
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "{{username}}",
+  "password": "{{password}}"
+}
+
+### ─────────────────────────────────────────────────────────────────────────
+### Pegar aquí el token del paso 1
+### ─────────────────────────────────────────────────────────────────────────
+
+@token = PEGAR_TOKEN_AQUI
+
+### ─────────────────────────────────────────────────────────────────────────
+### 2. DATOS DISPONIBLES — público, sin auth
+### ─────────────────────────────────────────────────────────────────────────
+
+GET {{base}}/data/available-days
+
+### ─────────────────────────────────────────────────────────────────────────
+### 3. ARRANCAR SIMULACIÓN — copiar el id de la respuesta y pegarlo en @simId
+### ─────────────────────────────────────────────────────────────────────────
+
+POST {{base}}/simulations
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "simStart": "2026-01-02T00:00:00Z",
+  "simEnd":   "2026-01-03T00:00:00Z"
+}
+
+### ─────────────────────────────────────────────────────────────────────────
+### Pegar aquí el id del paso 3
+### ─────────────────────────────────────────────────────────────────────────
+
+@simId = PEGAR_ID_AQUI
+
+### ─────────────────────────────────────────────────────────────────────────
+### 4. VER ESTADO DE LA SESIÓN
+### ─────────────────────────────────────────────────────────────────────────
+
+GET {{base}}/simulations/{{simId}}
+Authorization: Bearer {{token}}
+
+### ─────────────────────────────────────────────────────────────────────────
+### 5. DASHBOARD EN TIEMPO REAL
+### ─────────────────────────────────────────────────────────────────────────
+
+GET {{base}}/simulations/{{simId}}/dashboard
+Authorization: Bearer {{token}}
+
+### ─────────────────────────────────────────────────────────────────────────
+### 6. TRACKING DE UNA MALETA (reemplazar el id de baggage)
+### ─────────────────────────────────────────────────────────────────────────
+
+GET {{base}}/simulations/{{simId}}/baggage/S1-B1
+Authorization: Bearer {{token}}
+
+### ─────────────────────────────────────────────────────────────────────────
+### 7. PAUSAR
+### ─────────────────────────────────────────────────────────────────────────
+
+POST {{base}}/simulations/{{simId}}/pause
+Authorization: Bearer {{token}}
+
+### ─────────────────────────────────────────────────────────────────────────
+### 8. REANUDAR
+### ─────────────────────────────────────────────────────────────────────────
+
+POST {{base}}/simulations/{{simId}}/resume
+Authorization: Bearer {{token}}
+
+### ─────────────────────────────────────────────────────────────────────────
+### 9. DETENER
+### ─────────────────────────────────────────────────────────────────────────
+
+POST {{base}}/simulations/{{simId}}/stop
+Authorization: Bearer {{token}}
+
+### ─────────────────────────────────────────────────────────────────────────
+### 10. WEBSOCKET — pegar en la consola del navegador (F12)
+###
+###  const ws = new WebSocket(
+###    `ws://localhost:8080/api/v1/simulations/${simId}/ws?token=${token}`
+###  );
+###  ws.onmessage = e => console.log(JSON.parse(e.data));
+###  ws.onerror   = e => console.error('Error:', e);
+###  ws.onclose   = e => console.log('Cerrado:', e.code);
+### ─────────────────────────────────────────────────────────────────────────

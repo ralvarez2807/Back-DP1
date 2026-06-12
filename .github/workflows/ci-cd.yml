@@ -28,26 +28,19 @@ jobs:
     name: Deploy to Servidor PUCP
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: backend-ci
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          timeout: 60s
-          command_timeout: 15m
-          script: |
-            set -e
-            export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-            export PATH=$JAVA_HOME/bin:$PATH
-            cd /home/1inf54.982.6f/back/Simulador/com.tasf.b2b
-            git pull origin main
-            mvn clean package -DskipTests
-            sudo systemctl restart backend
-            sleep 20
-            sudo systemctl status backend --no-pager
-            echo "✅ Backend desplegado"
+      - name: Deploy
+        run: |
+          set -e
+          export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+          export PATH=$JAVA_HOME/bin:$PATH
+          cd /home/1inf54.982.6f/back/Simulador/com.tasf.b2b
+          git pull origin main
+          mvn clean package -DskipTests
+          sudo systemctl restart backend
+          sleep 20
+          sudo systemctl status backend --no-pager
+          echo "✅ Backend desplegado"

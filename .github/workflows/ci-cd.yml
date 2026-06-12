@@ -38,6 +38,8 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 60s
+          command_timeout: 15m
           script: |
             set -e
             export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64

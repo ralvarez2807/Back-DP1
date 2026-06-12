@@ -4,9 +4,13 @@ import com.tasf.b2b.application.dto.SimSessionView;
 import com.tasf.b2b.application.port.in.DisruptionCommand;
 import com.tasf.b2b.application.port.in.SimulationControlPort;
 import com.tasf.b2b.application.port.in.SimulationQueryPort;
+import com.tasf.b2b.application.port.in.StartSimulationCommand;
+import com.tasf.b2b.domain.simulator.SimulationConfig;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.security.Principal;
 import java.time.Instant;
 import java.util.List;
 
@@ -38,11 +42,17 @@ public class SimulationController {
     // ── DTOs de request/response ──────────────────────────────────────────────
 
     /**
-     * Body del POST /simulations.
-     * simStart y simEnd en formato ISO-8601 UTC: "2026-01-02T00:00:00Z"
-     * Jackson convierte automáticamente el string JSON a Instant.
+     * DB:     requiere simStart, simEnd, speedFactor.
+     * MANUAL: simStart, simEnd, speedFactor deben ser null (se ignoran si se envían).
      */
-    record CreateSessionRequest(Instant simStart, Instant simEnd) {}
+    record CreateSessionRequest(
+            String  dataSource,
+            String  solverTimingMode,
+            String  optimizerMode,
+            Instant simStart,
+            Instant simEnd,
+            Double  speedFactor
+    ) {}
 
     /**
      * Respuesta con el estado de una sesión.
@@ -64,12 +74,47 @@ public class SimulationController {
      */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public SessionResponse create(@RequestBody CreateSessionRequest req) {
-        System.out.printf("[CTRL] POST /simulations recibido: %s → %s%n", req.simStart(), req.simEnd());
-        String sessionId = controlPort.start(req.simStart(), req.simEnd());
-        SessionResponse resp = SessionResponse.from(queryPort.getSession(sessionId));
-        System.out.printf("[CTRL] POST /simulations respondiendo 201: id=%s status=%s%n", resp.id(), resp.status());
-        return resp;
+    public SessionResponse create(@RequestBody CreateSessionRequest req, Principal principal) {
+        if (req.dataSource() == null)       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido: dataSource (DB | MANUAL)");
+        if (req.solverTimingMode() == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido: solverTimingMode (REAL_TIME | PAUSE | EVENT_DRIVEN)");
+        if (req.optimizerMode() == null)    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido: optimizerMode (ALNS_ONLY | GENETIC_ONLY | ALNS_ACTIVE_GENETIC_EVAL | GENETIC_ACTIVE_ALNS_EVAL)");
+
+        SimulationConfig.DataSource       ds  = parseEnum(SimulationConfig.DataSource.class,       req.dataSource(),       "dataSource");
+        SimulationConfig.SolverTimingMode stm = parseEnum(SimulationConfig.SolverTimingMode.class, req.solverTimingMode(), "solverTimingMode");
+        SimulationConfig.OptimizerMode    om  = parseEnum(SimulationConfig.OptimizerMode.class,    req.optimizerMode(),    "optimizerMode");
+
+        if (ds == SimulationConfig.DataSource.DB) {
+            if (req.simStart()    == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido para DB: simStart");
+            if (req.simEnd()      == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido para DB: simEnd");
+            if (req.speedFactor() == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido para DB: speedFactor");
+            if (req.speedFactor() <= 0)    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "speedFactor debe ser mayor que 0");
+        }
+
+        StartSimulationCommand cmd = new StartSimulationCommand(principal.getName(), ds, stm, om,
+                req.simStart(), req.simEnd(), req.speedFactor());
+
+        String sessionId = controlPort.start(cmd);
+        return SessionResponse.from(queryPort.getSession(sessionId));
+    }
+
+    /**
+     * Devuelve la sesión activa del usuario autenticado, o 404 si no tiene ninguna.
+     * Útil para reconectar desde otro navegador sin conocer el sessionId.
+     */
+    @GetMapping("/mine")
+    public SessionResponse getMine(Principal principal) {
+        SimSessionView view = queryPort.getSessionByUser(principal.getName());
+        if (view == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No hay sesión activa para este usuario");
+        return SessionResponse.from(view);
+    }
+
+    private <E extends Enum<E>> E parseEnum(Class<E> type, String value, String fieldName) {
+        try {
+            return Enum.valueOf(type, value.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Valor inválido para " + fieldName + ": '" + value + "'");
+        }
     }
 
     /**

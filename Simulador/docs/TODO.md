@@ -63,40 +63,49 @@
 ### infrastructure/security
 - [x] `JwtService` — genera y valida tokens HS256; secret desde `${JWT_SECRET}` (variable de entorno), expiración desde `application.yml`
 - [x] `JwtAuthFilter` — `OncePerRequestFilter`; extrae Bearer token, valida, setea SecurityContext; logging con SLF4J (nivel DEBUG para auth, WARN para fallos)
-- [x] `SecurityConfig` — STATELESS, CSRF disabled; security headers HTTP (`X-Frame-Options DENY`, `X-Content-Type-Options nosniff`, HSTS); rutas públicas: `POST /auth/login`, `GET /data/available-days`, `GET /simulations/*/ws`
+- [x] `SecurityConfig` — STATELESS, CSRF disabled; security headers HTTP; rutas públicas: `POST /auth/login`, `GET /simulations/*/ws`, `/swagger-ui/**`, `/v3/api-docs/**`
+- [x] Swagger UI — `springdoc-openapi-starter-webmvc-ui 2.6.0`; disponible en `http://localhost:8080/swagger-ui.html`; autorización con `Bearer <token>` desde el botón Authorize
 
 ### infrastructure/config
 - [x] `SpringConfig` — `@Bean` para SimulationRegistry, RunSimulationUseCase, QuerySimulationUseCase, TxtAvailableDaysService; factory `InMemoryStatePublisher::new` por sesión
 - [x] `application.yml` — puerto 8080, rutas de archivos de datos, `jwt.secret` desde `${JWT_SECRET}`, `app.cors.allowed-origins` configurable, logging
 
 ### application
-- [x] `SimulationControlPort` — interface in: `start(simStart, simEnd) → sessionId`, `pause(id)`, `resume(id)`, `stop(id)`
+- [x] `SimulationControlPort` — interface in: `start(StartSimulationCommand) → sessionId`, `pause(id)`, `resume(id)`, `stop(id)`
 - [x] `SimulationQueryPort` — interface in: `getSession(id)`, `getDashboard(id)`, `getBaggageState(sessionId, baggageId)`, `getSnapshot(id)`
 - [x] `AvailableDaysPort` — interface in: `getAvailableDates() → List<LocalDate>`
-- [x] `SimulationRegistry` — `ConcurrentHashMap<sessionId, SimulationSession>`; `findOrThrow` → `IllegalArgumentException` (→ HTTP 404)
-- [x] `SimulationSession` — guarda `StatePublisher` por sesión; `interruptAll()` llama `publisher.close()` además de interrumpir hilos
-- [x] `RunSimulationUseCase implements SimulationControlPort` — recibe `Function<String, StatePublisher>` factory; crea publisher por sesión en `start()`; calcula speedFactor automático
-- [x] `QuerySimulationUseCase implements SimulationQueryPort` — `getSession`, `getDashboard`, `getBaggageState`, `getSnapshot` (vuelos + baggages del horizonte actual)
+- [x] `SimulationRegistry` — doble mapa O(1): `sessions` (sessionId→sesión) + `byUser` (username→sessionId); `findOrThrow`, `findByUser`, `hasActiveSession` (STARTING/RUNNING/PAUSED), `remove` limpia ambos mapas
+- [x] `SimulationSession` — guarda `username` del creador + `StatePublisher` por sesión; `interruptAll()` llama `publisher.close()` además de interrumpir hilos
+- [x] `StartSimulationCommand` — record: username, dataSource, solverTimingMode, optimizerMode, simStart, simEnd, speedFactor
+- [x] `RunSimulationUseCase implements SimulationControlPort` — recibe `Function<String, StatePublisher>` factory; verifica `hasActiveSession` antes de crear (→ 409); crea publisher por sesión; `validateCombination()` lanza `UnsupportedOperationException` para modos no implementados
+- [x] `QuerySimulationUseCase implements SimulationQueryPort` — `getSession`, `getSessionByUser` (null si no existe), `getDashboard`, `getBaggageState`, `getSnapshot` (vuelos + baggages del horizonte actual)
 - [x] `application/dto/` — `SimSessionView`, `DashboardView`, `BaggageView`, `SnapshotView` (con `FlightSnap` y `BaggageSnap` anidados)
 
 ### presentation/rest
 - [x] `TasfApplication` — `@SpringBootApplication` main
-- [x] `GlobalExceptionHandler` — `IllegalArgumentException` → 404, `IllegalStateException` → 409, `ResponseStatusException` → su propio status (401, 429…), `Exception` → 500 sin detalles internos (ID de referencia en logs); SLF4J
-- [x] `AuthController` — `POST /api/v1/auth/login` (usuario+password → JWT) con rate limiting 5 intentos/IP/minuto (Bucket4j), `POST /api/v1/auth/refresh`
-- [x] `DataController` — `GET /api/v1/data/available-days` (público, sin auth)
-- [x] `SimulationController` — `POST /api/v1/simulations`, `GET /api/v1/simulations/:id`, `POST .../pause`, `POST .../resume`, `POST .../stop`
+- [x] `GlobalExceptionHandler` — `IllegalArgumentException` → 404, `IllegalStateException` → 409, `UnsupportedOperationException` → 501, `ResponseStatusException` → su propio status (401, 429…), `Exception` → 500 sin detalles internos (ID de referencia en logs); SLF4J
+- [x] `AuthController` — `POST /api/v1/auth/login` (recibe `passwordHash` = sha256 hex; back compara con `bcrypt(sha256)` en BD; rate limiting 5 intentos/IP/minuto con Bucket4j), `POST /api/v1/auth/refresh`
+- [x] `HashGenerator` — genera `bcrypt(sha256(password))` para insertar/actualizar en BD; incluye el SQL listo para ejecutar
+- [x] `DataController` — `GET /api/v1/data/available-days`, `GET /api/v1/data/airports`, `GET /api/v1/data/routes` (requieren JWT)
+- [x] `SimulationController` — `POST /api/v1/simulations` (extrae username del `Principal`; 400 campo faltante, 409 sesión activa, 501 combinación no implementada), `GET /api/v1/simulations/mine` (sesión activa del usuario o 404), `GET /:id`, `POST .../pause`, `POST .../resume`, `POST .../stop`
 - [x] `MonitoringController` — `GET /api/v1/simulations/:id/dashboard`, `GET /api/v1/simulations/:id/snapshot`
 - [x] `TrackingController` — `GET /api/v1/simulations/:id/baggage/:baggageId`
 
 ### presentation/websocket — streaming en tiempo real (sin Redis)
-- [x] `InMemoryStatePublisher implements StatePublisher` — `BlockingQueue` + hilo daemon drenador; broadcasta a sesiones WS suscritas; `close()` interrumpe el drenador
+- [x] `InMemoryStatePublisher implements StatePublisher` — `BlockingQueue` + hilo daemon drenador; broadcasta a sesiones WS suscritas; `close()` interrumpe el drenador; `seq` `AtomicLong` incremental por sesión en cada envelope
 - [x] `SimulationWebSocketHandler` — registra/desregistra `WebSocketSession` en `InMemoryStatePublisher` al conectar/desconectar; sin hilo propio por conexión
 - [x] `JwtHandshakeInterceptor` — valida JWT vía query param `?token=<jwt>` antes de aceptar el handshake WS
 - [x] `WebSocketConfig` — registra el handler en `/api/v1/simulations/{id}/ws`; orígenes desde `${app.cors.allowed-origins}` (no más `"*"`)
 - [x] `spring-boot-starter-websocket` agregado al `pom.xml`
 
-### pruebas manuales
-- [x] `test.http` — flujo completo: login → arrancar simulación → dashboard → tracking → pause/resume/stop → snippet WebSocket para browser
+### pruebas manuales (Postman)
+- [x] login, refresh
+- [x] POST/GET/pause/resume/stop simulación
+- [x] dashboard, snapshot
+- [x] WebSocket — suscripción y eventos en vivo; `seq` incremental por sesión implementado
+- [ ] disrupciones (`POST /simulations/:id/disruptions`)
+- [ ] tracking baggage (`GET /simulations/:id/baggage/:baggageId` y `.../route`)
+- [ ] admin merge (airports, flights) y DELETEs (shipments, historical)
 
 ### tests
 - [x] `BaggageTest` — 12 tests: estado, rutas, transiciones de currentEdge
@@ -132,6 +141,38 @@
 - [ ] `HistoricalBaggageRepository` — interface out (port)
 - [ ] `HistoricalQueryPort` — interface in: getCompletedFlights, getDeliveredBaggages
 - [ ] `QueryCurrentStateUseCase` — enruta: grafo (>= marginLowerCompleted) o PostgreSQL (< marginLowerCompleted)
+
+### application — ports y datos nuevos para los paneles del front (roadmap Fases 2–8)
+
+- [ ] Añadir a `SimulationQueryPort`: `getFlights(id)`, `getFlightDetail(id, flightId)`, `getAirportsLive(id)`, `getAirportInbound(id, icao)`, `getAirportOutbound(id, icao)`, `getAirportTransit(id, icao)`, `getShipmentsPlanned(id)`, `getShipmentsInFlight(id)`, `getShipmentsDelivered(id, hours)`, `getSimulationReport(id)`
+- [ ] Añadir `Map<String, Shipment> activeShipments` en `SimulationSession` — poblado cuando llega `NewShipmentEvent`, necesario para agrupar maletas por envío en los endpoints de shipments y airports
+- [ ] Añadir campo `deliveredAt: Instant` en `Baggage` (o en el registro de `deliveredBaggages` del runner) para poder filtrar entregas por ventana de tiempo simulado
+
+### presentation/rest — endpoints nuevos (roadmap Fases 2–8)
+
+Todos bajo `/api/v1/simulations/{id}/`. Ver contratos completos en `APIS.md`.
+
+**Panel de vuelos (Fase 2)**
+- [ ] `FlightsController` — `GET /simulations/:id/flights` — lista vuelos del horizonte con `occupancyLevel` (`EMPTY` = 0 %, `GREEN` ≤ 60 %, `AMBER` ≤ 85 %, `RED` > 85 %)
+- [ ] `FlightsController` — `GET /simulations/:id/flights/:flightId` — detalle de un vuelo con los envíos y maletas a bordo
+
+**Panel de almacenes (Fase 3)**
+- [ ] `AirportLiveController` — `GET /simulations/:id/airports` — aeropuertos con carga en tiempo real y `occupancyLevel`
+- [ ] `AirportLiveController` — `GET /simulations/:id/airports/:icao/inbound` — vuelos planificados que llegarán con sus maletas asignadas
+- [ ] `AirportLiveController` — `GET /simulations/:id/airports/:icao/outbound` — vuelos planificados que saldrán con sus maletas asignadas
+- [ ] `AirportLiveController` — `GET /simulations/:id/airports/:icao/transit` — maletas actualmente esperando conexión en ese aeropuerto (currentEdge = WaitEdge en ese nodo)
+
+**Panel de envíos (Fase 4)**
+- [ ] `ShipmentPanelController` — `GET /simulations/:id/shipments/planned` — envíos con ruta asignada esperando vuelo (status WAITING, agrupados por shipmentId)
+- [ ] `ShipmentPanelController` — `GET /simulations/:id/shipments/in-flight` — envíos actualmente en el aire (status IN_FLIGHT, agrupados)
+- [ ] `ShipmentPanelController` — `GET /simulations/:id/shipments/delivered?hours=N` — entregas de las últimas N horas de tiempo simulado (default 4); requiere `deliveredAt` en Baggage
+
+**Reportes (Fase 8)**
+- [ ] `ReportController` — `GET /simulations/:id/reports/summary` — métricas finales: totales, SLA, throughput, rutas más usadas
+
+### WebSocket — validación pendiente (Fase 6, D14)
+
+- [ ] Confirmar que `POST /simulations/:id/disruptions` → `controlPort.injectDisruption()` emite `FLIGHT_CANCELLED` + `BAGGAGE_PENDING` por `StatePublisher` → WebSocket. Trazar el flujo desde `RunSimulationUseCase.injectDisruption` hasta `InMemoryStatePublisher.publish`.
 
 ---
 

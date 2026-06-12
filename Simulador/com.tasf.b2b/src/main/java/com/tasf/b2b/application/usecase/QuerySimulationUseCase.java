@@ -59,6 +59,19 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 session.getConfig().simEnd());
     }
 
+    @Override
+    public SimSessionView getSessionByUser(String username) {
+        SimulationSession session = registry.findByUser(username);
+        if (session == null) return null;
+        SimulationRunner runner = session.getRunner();
+        return new SimSessionView(
+                session.getId(),
+                session.getStatus().name().toLowerCase(),
+                runner.getClock().now(),
+                session.getConfig().simStart(),
+                session.getConfig().simEnd());
+    }
+
     // ── getDashboard ──────────────────────────────────────────────────────────
 
     @Override

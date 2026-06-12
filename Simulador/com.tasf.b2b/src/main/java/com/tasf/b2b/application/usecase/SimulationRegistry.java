@@ -20,34 +20,48 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class SimulationRegistry {
 
-    // sessionId (UUID) → sesión activa
-    private final ConcurrentHashMap<String, SimulationSession> sessions =
-            new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, SimulationSession> sessions = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String>            byUser   = new ConcurrentHashMap<>();
 
     /** Registra una nueva sesión. Llamado justo antes de arrancar sus hilos. */
     public void register(SimulationSession session) {
         sessions.put(session.getId(), session);
+        byUser.put(session.getUsername(), session.getId());
     }
 
     /**
      * Busca una sesión por ID.
-     * @throws IllegalArgumentException si no existe — el controlador REST
-     *         convierte esto en HTTP 404.
+     * @throws IllegalArgumentException si no existe → HTTP 404.
      */
     public SimulationSession findOrThrow(String sessionId) {
         SimulationSession s = sessions.get(sessionId);
-        if (s == null) {
-            throw new IllegalArgumentException("Sesión no encontrada: " + sessionId);
-        }
+        if (s == null) throw new IllegalArgumentException("Sesión no encontrada: " + sessionId);
         return s;
     }
 
-    /** Elimina una sesión del registro (después de stop). */
-    public void remove(String sessionId) {
-        sessions.remove(sessionId);
+    /** Sesión activa del usuario, o null si no tiene ninguna. */
+    public SimulationSession findByUser(String username) {
+        String sessionId = byUser.get(username);
+        return sessionId != null ? sessions.get(sessionId) : null;
     }
 
-    /** Todas las sesiones activas — para monitoreo global o admin. */
+    /** true si el usuario ya tiene una sesión activa (STARTING, RUNNING o PAUSED). */
+    public boolean hasActiveSession(String username) {
+        SimulationSession s = findByUser(username);
+        if (s == null) return false;
+        return switch (s.getStatus()) {
+            case STARTING, RUNNING, PAUSED -> true;
+            default -> false;
+        };
+    }
+
+    /** Elimina una sesión del registro (después de stop o completed). */
+    public void remove(String sessionId) {
+        SimulationSession s = sessions.remove(sessionId);
+        if (s != null) byUser.remove(s.getUsername());
+    }
+
+    /** Todas las sesiones activas. */
     public Collection<SimulationSession> all() {
         return Collections.unmodifiableCollection(sessions.values());
     }

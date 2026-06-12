@@ -20,6 +20,12 @@ public interface SimulationQueryPort {
     SimSessionView getSession(String sessionId);
 
     /**
+     * Sesión activa del usuario, o null si no tiene ninguna.
+     * Útil para reconectar desde otro navegador sin conocer el sessionId.
+     */
+    SimSessionView getSessionByUser(String username);
+
+    /**
      * Métricas agregadas calculadas en el momento de la llamada.
      * Leer frecuentemente para polling del dashboard.
      *

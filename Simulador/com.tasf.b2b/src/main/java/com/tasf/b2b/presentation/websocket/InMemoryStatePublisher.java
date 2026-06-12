@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * StatePublisher sin dependencias externas.
@@ -26,10 +27,11 @@ import java.util.concurrent.LinkedBlockingQueue;
  */
 public class InMemoryStatePublisher implements StatePublisher {
 
-    private final BlockingQueue<StateChangeDTO>        queue       = new LinkedBlockingQueue<>();
+    private final BlockingQueue<StateChangeDTO>          queue       = new LinkedBlockingQueue<>();
     private final CopyOnWriteArrayList<WebSocketSession> subscribers = new CopyOnWriteArrayList<>();
-    private final Thread                               drainThread;
-    private final ObjectMapper                         mapper;
+    private final AtomicLong                             seq         = new AtomicLong(0);
+    private final Thread                                 drainThread;
+    private final ObjectMapper                           mapper;
 
     public InMemoryStatePublisher(String sessionId) {
         this.mapper = new ObjectMapper()
@@ -101,6 +103,7 @@ public class InMemoryStatePublisher implements StatePublisher {
 
     private String buildEnvelope(StateChangeDTO dto) throws Exception {
         Map<String, Object> envelope = Map.of(
+                "seq",     seq.getAndIncrement(),
                 "type",    eventType(dto),
                 "simTime", dto.simTime().toString(),
                 "payload", dto);

@@ -1,6 +1,5 @@
 package com.tasf.b2b.application.port.in;
 
-import java.time.Instant;
 import java.util.List;
 
 /**
@@ -17,11 +16,11 @@ public interface SimulationControlPort {
     /**
      * Crea e inicia una sesión de simulación.
      *
-     * @param simStart inicio del periodo a simular (UTC)
-     * @param simEnd   fin del periodo a simular (UTC)
      * @return UUID de sesión — usar en todas las llamadas posteriores
+     * @throws UnsupportedOperationException si la combinación de modos no está implementada (→ 501)
+     * @throws IllegalStateException         si ya existe una sesión MANUAL activa (→ 409)
      */
-    String start(Instant simStart, Instant simEnd);
+    String start(StartSimulationCommand command);
 
     /**
      * Pausa el reloj de simulación. Los eventos dejan de dispararse;

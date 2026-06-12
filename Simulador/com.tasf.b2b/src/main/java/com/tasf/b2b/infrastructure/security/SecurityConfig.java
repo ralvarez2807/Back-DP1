@@ -65,9 +65,7 @@ public class SecurityConfig {
                 // Reglas de autorización por ruta
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
-                        // Datos de referencia del mapa (aeropuertos / rutas): solo lectura y
-                        // públicos — el MapProvider del front los pide sin JWT al cargar la página
-                        .requestMatchers(HttpMethod.GET, "/api/v1/data/**").permitAll()
+                        .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
                         // El handshake WebSocket va autenticado por JwtHandshakeInterceptor (query param token=)
                         // Spring Security no puede leer el JWT del query param, así que se excluye aquí
                         .requestMatchers("/api/v1/simulations/*/ws").permitAll()

@@ -21,12 +21,13 @@ import java.util.stream.Collectors;
  * Manejador global de excepciones para toda la API REST.
  *
  * Mapa de excepciones → HTTP status:
- *   HttpMessageNotReadableException  → 400 Bad Request  (body inválido o ausente)
- *   MethodArgumentNotValidException  → 400 Bad Request  (validación @Valid)
+ *   HttpMessageNotReadableException  → 400 Bad Request    (body inválido o ausente)
+ *   MethodArgumentNotValidException  → 400 Bad Request    (validación @Valid)
  *   ResponseStatusException          → el status que lleva la excepción (401, 409, 429, etc.)
- *   IllegalArgumentException         → 404 Not Found    (sesión/baggage no existe)
- *   IllegalStateException            → 409 Conflict     (pausar una sesión ya pausada, etc.)
- *   Exception                        → 500 Internal     (cualquier error no esperado)
+ *   IllegalArgumentException         → 404 Not Found      (sesión/baggage no existe)
+ *   IllegalStateException            → 409 Conflict       (pausar una sesión ya pausada, etc.)
+ *   UnsupportedOperationException    → 501 Not Implemented (combinación de modos no disponible)
+ *   Exception                        → 500 Internal       (cualquier error no esperado)
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -82,6 +83,13 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.CONFLICT)
     public Map<String, String> handleConflict(IllegalStateException e, HttpServletRequest req) {
         log.warn("409 {} {}: {}", req.getMethod(), req.getRequestURI(), e.getMessage());
+        return Map.of("error", e.getMessage());
+    }
+
+    @ExceptionHandler(UnsupportedOperationException.class)
+    @ResponseStatus(HttpStatus.NOT_IMPLEMENTED)
+    public Map<String, String> handleNotImplemented(UnsupportedOperationException e, HttpServletRequest req) {
+        log.warn("501 {} {}: {}", req.getMethod(), req.getRequestURI(), e.getMessage());
         return Map.of("error", e.getMessage());
     }
 

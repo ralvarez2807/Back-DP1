@@ -2,6 +2,7 @@ package com.tasf.b2b.application.usecase;
 
 import com.tasf.b2b.application.port.in.DisruptionCommand;
 import com.tasf.b2b.application.port.in.SimulationControlPort;
+import com.tasf.b2b.application.port.in.StartSimulationCommand;
 import com.tasf.b2b.domain.model.graph.SpaceTimeGraph;
 import com.tasf.b2b.domain.model.graph.componentsgraph.FlightEdge;
 import com.tasf.b2b.domain.model.graph.immovable.AirportDataDTO;
@@ -18,7 +19,6 @@ import com.tasf.b2b.domain.simulator.feed.CancellationFeed;
 import com.tasf.b2b.domain.simulator.feed.ShipmentFeed;
 import com.tasf.b2b.domain.simulator.thread.*;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -47,13 +47,6 @@ import java.util.function.Function;
  *  - El constructor se convierte en @Bean o @PostConstruct
  */
 public class RunSimulationUseCase implements SimulationControlPort {
-
-    /**
-     * Tiempo real objetivo para correr la simulación.
-     * Ejemplo: 5 días simulados → el reloj va 480x más rápido → termina en ~15 min reales.
-     * Ajustar si se quiere una demo más rápida o más lenta.
-     */
-    private static final long TARGET_REAL_SECONDS = 15 * 60L; // 15 minutos
 
     private final SimulationRegistry          registry;
     private final Function<String, StatePublisher> publisherFactory;
@@ -101,14 +94,16 @@ public class RunSimulationUseCase implements SimulationControlPort {
      * @return UUID de la sesión — usar en pause/resume/stop/query
      */
     @Override
-    public String start(Instant simStart, Instant simEnd) {
+    public String start(StartSimulationCommand cmd) {
+        validateCombination(cmd);
 
-        // ── 1. speedFactor ────────────────────────────────────────────────────
-        // speedFactor = segundos_simulados / segundos_reales_objetivo
-        // Ejemplo: 5 días (432 000 s) / 900 s = 480x
-        long   simSeconds   = Duration.between(simStart, simEnd).toSeconds();
-        double speedFactor  = Math.max(1.0, (double) simSeconds / TARGET_REAL_SECONDS);
-        System.out.printf("[SIM] speedFactor calculado: %.1fx%n", speedFactor);
+        if (registry.hasActiveSession(cmd.username()))
+            throw new IllegalStateException(
+                    "El usuario ya tiene una simulación activa. Detén la sesión actual antes de iniciar una nueva.");
+
+        Instant simStart    = cmd.simStart();
+        Instant simEnd      = cmd.simEnd();
+        double  speedFactor = cmd.speedFactor();
 
         // ── 2. Grafo espacio-temporal ─────────────────────────────────────────
         // Cada sesión tiene su propio grafo — no se comparten entre sesiones.
@@ -121,7 +116,9 @@ public class RunSimulationUseCase implements SimulationControlPort {
         StatePublisher publisher = publisherFactory.apply(sessionId);
 
         // ── 4. Configuración y runner ─────────────────────────────────────────
-        SimulationConfig config = SimulationConfig.defaultTxt(simStart, simEnd, speedFactor);
+        SimulationConfig config = new SimulationConfig(
+                cmd.solverTimingMode(), cmd.optimizerMode(), speedFactor,
+                simStart, simEnd, cmd.dataSource(), 10, 10);
         SimulationRunner runner = new SimulationRunner(graph, config, publisher);
         runner.init(); // siembra HorizonExpandEvent y SimulationEndEvent en la cola
 
@@ -132,7 +129,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
         CancellationFeed cancellationFeed = cancellationFeedFactory.apply(simStart, simEnd);
 
         // ── 6. Sesión ─────────────────────────────────────────────────────────
-        SimulationSession session = new SimulationSession(sessionId, runner, graph, config, publisher);
+        SimulationSession session = new SimulationSession(sessionId, cmd.username(), runner, graph, config, publisher);
 
         // ── 7. Hilo del runner (no-daemon) ────────────────────────────────────
         // Es el único hilo no-daemon: la JVM espera a que termine.
@@ -188,6 +185,27 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 sessionId, simStart, simEnd, speedFactor);
 
         return sessionId;
+    }
+
+    // ── validación de combinación ─────────────────────────────────────────────
+
+    private void validateCombination(StartSimulationCommand cmd) {
+        // MANUAL no está implementado
+        if (cmd.dataSource() == SimulationConfig.DataSource.MANUAL)
+            throw new UnsupportedOperationException(
+                    "dataSource MANUAL no implementado aún. Disponible: DB");
+
+        // Solo una sesión MANUAL activa (futuro)
+        // if (cmd.dataSource() == MANUAL && registry.hasManualSession())
+        //     throw new IllegalStateException("Ya existe una sesión MANUAL activa");
+
+        if (cmd.solverTimingMode() != SimulationConfig.SolverTimingMode.REAL_TIME)
+            throw new UnsupportedOperationException(
+                    "solverTimingMode '" + cmd.solverTimingMode() + "' no implementado. Disponible: REAL_TIME");
+
+        if (cmd.optimizerMode() != SimulationConfig.OptimizerMode.ALNS_ONLY)
+            throw new UnsupportedOperationException(
+                    "optimizerMode '" + cmd.optimizerMode() + "' no implementado. Disponible: ALNS_ONLY");
     }
 
     // ── pause / resume / stop ─────────────────────────────────────────────────

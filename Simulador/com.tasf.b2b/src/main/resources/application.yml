@@ -37,6 +37,10 @@ spring:
     username: ${DB_USER:tasf}
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      keepalive-time: 300000      # ping SELECT 1 cada 5 min a conexiones idle
+      max-lifetime: 600000        # recrea conexiones antes de que Postgres las cierre (default 30 min)
+      connection-test-query: SELECT 1
   jpa:
     hibernate:
       ddl-auto: none        # el esquema se gestiona con schema.sql manualmente

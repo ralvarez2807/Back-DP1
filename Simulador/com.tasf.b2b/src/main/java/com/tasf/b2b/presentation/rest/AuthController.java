@@ -43,7 +43,7 @@ public class AuthController {
 
     // ── DTOs de request/response ──────────────────────────────────────────────
 
-    record LoginRequest(String username, String password) {}
+    record LoginRequest(String username, String passwordHash) {}
     record AuthResponse(String accessToken, Instant expiresAt) {}
 
     // ── Endpoints ─────────────────────────────────────────────────────────────
@@ -71,7 +71,7 @@ public class AuthController {
         String hash = userRepository.findPasswordHash(req.username())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Credenciales inválidas"));
 
-        if (!passwordEncoder.matches(req.password(), hash)) {
+        if (!passwordEncoder.matches(req.passwordHash(), hash)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Credenciales inválidas");
         }
 

@@ -22,6 +22,7 @@ public class SimulationSession {
     public enum SimStatus { STARTING, RUNNING, PAUSED, COMPLETED, STOPPED }
 
     private final String           id;
+    private final String           username;
     private final SimulationRunner runner;
     private final SpaceTimeGraph   graph;
     private final SimulationConfig config;
@@ -33,11 +34,13 @@ public class SimulationSession {
     private volatile SimStatus status;
 
     public SimulationSession(String id,
+                             String username,
                              SimulationRunner runner,
                              SpaceTimeGraph graph,
                              SimulationConfig config,
                              StatePublisher publisher) {
         this.id        = id;
+        this.username  = username;
         this.runner    = runner;
         this.graph     = graph;
         this.config    = config;
@@ -65,6 +68,7 @@ public class SimulationSession {
     // ── Getters / setters ────────────────────────────────────────────────────
 
     public String           getId()        { return id; }
+    public String           getUsername()  { return username; }
     public SimulationRunner getRunner()    { return runner; }
     public SpaceTimeGraph   getGraph()     { return graph; }
     public SimulationConfig getConfig()    { return config; }

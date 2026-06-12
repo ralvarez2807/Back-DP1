@@ -21,7 +21,7 @@ public record SimulationConfig(
         GENETIC_ACTIVE_ALNS_EVAL
     }
 
-    public enum DataSource { TXT, MANUAL }
+    public enum DataSource { DB, MANUAL }
 
     public static SimulationConfig defaultTxt(Instant simStart, Instant simEnd, double speedFactor) {
         return new SimulationConfig(
@@ -30,7 +30,7 @@ public record SimulationConfig(
                 speedFactor,
                 simStart,
                 simEnd,
-                DataSource.TXT,
+                DataSource.DB,
                 10,
                 10
         );

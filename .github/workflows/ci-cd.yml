@@ -42,7 +42,7 @@ jobs:
             set -e
             export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
             export PATH=$JAVA_HOME/bin:$PATH
-            cd ${{ secrets.SERVER_BACK_DIR }}/Simulador/com.tasf.b2b
+            cd /home/1inf54.982.6f/back/Simulador/com.tasf.b2b
             git pull origin main
             mvn clean package -DskipTests
             sudo systemctl restart backend

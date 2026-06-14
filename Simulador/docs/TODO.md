@@ -72,14 +72,14 @@
 
 ### application
 - [x] `SimulationControlPort` — interface in: `start(StartSimulationCommand) → sessionId`, `pause(id)`, `resume(id)`, `stop(id)`
-- [x] `SimulationQueryPort` — interface in: `getSession(id)`, `getDashboard(id)`, `getBaggageState(sessionId, baggageId)`, `getSnapshot(id)`
+- [x] `SimulationQueryPort` — interface in: `getSession`, `getDashboard`, `getBaggageState`, `getSnapshot`, `getBaggageRoute`, `getFlights`, `getFlightDetail`, `getShipments`, `getShipmentDetail`, `getAirports`, `getAirportInbound`, `getAirportOutbound`, `getAirportTransit`, `getReport`
 - [x] `AvailableDaysPort` — interface in: `getAvailableDates() → List<LocalDate>`
 - [x] `SimulationRegistry` — doble mapa O(1): `sessions` (sessionId→sesión) + `byUser` (username→sessionId); `findOrThrow`, `findByUser`, `hasActiveSession` (STARTING/RUNNING/PAUSED), `remove` limpia ambos mapas
 - [x] `SimulationSession` — guarda `username` del creador + `StatePublisher` por sesión; `interruptAll()` llama `publisher.close()` además de interrumpir hilos
 - [x] `StartSimulationCommand` — record: username, dataSource, solverTimingMode, optimizerMode, simStart, simEnd, speedFactor
 - [x] `RunSimulationUseCase implements SimulationControlPort` — recibe `Function<String, StatePublisher>` factory; verifica `hasActiveSession` antes de crear (→ 409); crea publisher por sesión; `validateCombination()` lanza `UnsupportedOperationException` para modos no implementados
-- [x] `QuerySimulationUseCase implements SimulationQueryPort` — `getSession`, `getSessionByUser` (null si no existe), `getDashboard`, `getBaggageState`, `getSnapshot` (vuelos + baggages del horizonte actual)
-- [x] `application/dto/` — `SimSessionView`, `DashboardView`, `BaggageView`, `SnapshotView` (con `FlightSnap` y `BaggageSnap` anidados)
+- [x] `QuerySimulationUseCase implements SimulationQueryPort` — implementa todos los métodos del puerto; usa `pendingBaggages + assignedBaggages` (no `allBaggages`) para evitar doble conteo de maletas entregadas
+- [x] `application/dto/` — `SimSessionView`, `DashboardView`, `BaggageView`, `BaggageRouteView`, `SnapshotView`, `FlightView` (con `DetailView`, `ShipmentOnFlight`, `BaggageOnFlight`), `ShipmentView` (con `DetailView`, `BaggageDetail`, `Leg`), `AirportLiveView` (con `InboundView`, `OutboundView`, `TransitView`), `ReportView`
 
 ### presentation/rest
 - [x] `TasfApplication` — `@SpringBootApplication` main
@@ -89,7 +89,11 @@
 - [x] `DataController` — `GET /api/v1/data/available-days`, `GET /api/v1/data/airports`, `GET /api/v1/data/routes` (requieren JWT)
 - [x] `SimulationController` — `POST /api/v1/simulations` (extrae username del `Principal`; 400 campo faltante, 409 sesión activa, 501 combinación no implementada), `GET /api/v1/simulations/mine` (sesión activa del usuario o 404), `GET /:id`, `POST .../pause`, `POST .../resume`, `POST .../stop`
 - [x] `MonitoringController` — `GET /api/v1/simulations/:id/dashboard`, `GET /api/v1/simulations/:id/snapshot`
-- [x] `TrackingController` — `GET /api/v1/simulations/:id/baggage/:baggageId`
+- [x] `TrackingController` — `GET /api/v1/simulations/:id/baggage/:baggageId`, `GET .../baggage/:baggageId/route`
+- [x] `FlightsController` — `GET /api/v1/simulations/:id/flights`, `GET .../flights/:flightId`
+- [x] `AirportLiveController` — `GET .../airports`, `GET .../airports/:icao/inbound`, `.../outbound`, `.../transit`
+- [x] `ShipmentPanelController` — `GET .../shipments`, `GET .../shipments/:shipmentId`
+- [x] `ReportController` — `GET .../reports/summary`
 
 ### presentation/websocket — streaming en tiempo real (sin Redis)
 - [x] `InMemoryStatePublisher implements StatePublisher` — `BlockingQueue` + hilo daemon drenador; broadcasta a sesiones WS suscritas; `close()` interrumpe el drenador; `seq` `AtomicLong` incremental por sesión en cada envelope
@@ -103,8 +107,12 @@
 - [x] POST/GET/pause/resume/stop simulación
 - [x] dashboard, snapshot
 - [x] WebSocket — suscripción y eventos en vivo; `seq` incremental por sesión implementado
+- [x] flights list y detail
+- [x] airports list, inbound, outbound, transit
+- [x] shipments list y detail (incluyendo fix de duplicado por `allBaggages`)
+- [x] baggage tracking y route
+- [x] reports summary
 - [ ] disrupciones (`POST /simulations/:id/disruptions`)
-- [ ] tracking baggage (`GET /simulations/:id/baggage/:baggageId` y `.../route`)
 - [ ] admin merge (airports, flights) y DELETEs (shipments, historical)
 
 ### tests
@@ -142,35 +150,11 @@
 - [ ] `HistoricalQueryPort` — interface in: getCompletedFlights, getDeliveredBaggages
 - [ ] `QueryCurrentStateUseCase` — enruta: grafo (>= marginLowerCompleted) o PostgreSQL (< marginLowerCompleted)
 
-### application — ports y datos nuevos para los paneles del front (roadmap Fases 2–8)
+### presentation/rest — endpoints pendientes
 
-- [ ] Añadir a `SimulationQueryPort`: `getFlights(id)`, `getFlightDetail(id, flightId)`, `getAirportsLive(id)`, `getAirportInbound(id, icao)`, `getAirportOutbound(id, icao)`, `getAirportTransit(id, icao)`, `getShipmentsPlanned(id)`, `getShipmentsInFlight(id)`, `getShipmentsDelivered(id, hours)`, `getSimulationReport(id)`
-- [ ] Añadir `Map<String, Shipment> activeShipments` en `SimulationSession` — poblado cuando llega `NewShipmentEvent`, necesario para agrupar maletas por envío en los endpoints de shipments y airports
-- [ ] Añadir campo `deliveredAt: Instant` en `Baggage` (o en el registro de `deliveredBaggages` del runner) para poder filtrar entregas por ventana de tiempo simulado
+- [ ] `POST /simulations/:id/disruptions` — inyectar cancelación/avería (flujo hasta WebSocket por validar)
 
-### presentation/rest — endpoints nuevos (roadmap Fases 2–8)
-
-Todos bajo `/api/v1/simulations/{id}/`. Ver contratos completos en `APIS.md`.
-
-**Panel de vuelos (Fase 2)**
-- [ ] `FlightsController` — `GET /simulations/:id/flights` — lista vuelos del horizonte con `occupancyLevel` (`EMPTY` = 0 %, `GREEN` ≤ 60 %, `AMBER` ≤ 85 %, `RED` > 85 %)
-- [ ] `FlightsController` — `GET /simulations/:id/flights/:flightId` — detalle de un vuelo con los envíos y maletas a bordo
-
-**Panel de almacenes (Fase 3)**
-- [ ] `AirportLiveController` — `GET /simulations/:id/airports` — aeropuertos con carga en tiempo real y `occupancyLevel`
-- [ ] `AirportLiveController` — `GET /simulations/:id/airports/:icao/inbound` — vuelos planificados que llegarán con sus maletas asignadas
-- [ ] `AirportLiveController` — `GET /simulations/:id/airports/:icao/outbound` — vuelos planificados que saldrán con sus maletas asignadas
-- [ ] `AirportLiveController` — `GET /simulations/:id/airports/:icao/transit` — maletas actualmente esperando conexión en ese aeropuerto (currentEdge = WaitEdge en ese nodo)
-
-**Panel de envíos (Fase 4)**
-- [ ] `ShipmentPanelController` — `GET /simulations/:id/shipments/planned` — envíos con ruta asignada esperando vuelo (status WAITING, agrupados por shipmentId)
-- [ ] `ShipmentPanelController` — `GET /simulations/:id/shipments/in-flight` — envíos actualmente en el aire (status IN_FLIGHT, agrupados)
-- [ ] `ShipmentPanelController` — `GET /simulations/:id/shipments/delivered?hours=N` — entregas de las últimas N horas de tiempo simulado (default 4); requiere `deliveredAt` en Baggage
-
-**Reportes (Fase 8)**
-- [ ] `ReportController` — `GET /simulations/:id/reports/summary` — métricas finales: totales, SLA, throughput, rutas más usadas
-
-### WebSocket — validación pendiente (Fase 6, D14)
+### WebSocket — validación pendiente
 
 - [ ] Confirmar que `POST /simulations/:id/disruptions` → `controlPort.injectDisruption()` emite `FLIGHT_CANCELLED` + `BAGGAGE_PENDING` por `StatePublisher` → WebSocket. Trazar el flujo desde `RunSimulationUseCase.injectDisruption` hasta `InMemoryStatePublisher.publish`.
 

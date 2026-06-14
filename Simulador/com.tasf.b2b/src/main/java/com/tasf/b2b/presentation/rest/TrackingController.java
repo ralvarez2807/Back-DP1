@@ -71,7 +71,7 @@ public class TrackingController {
             Instant depTime,
             Instant arrTime,
             String  flightId,
-            String  state) {       // TRAVELED | IN_FLIGHT | PLANNED
+            String  state) {       // ARRIVED | DEPARTED | PLANNED
         static LegResponse from(BaggageRouteView.Leg l) {
             return new LegResponse(l.fromIcao(), l.toIcao(), l.depTime(),
                     l.arrTime(), l.flightId(), l.state());

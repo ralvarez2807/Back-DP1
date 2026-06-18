@@ -48,6 +48,14 @@ import java.util.function.Function;
  */
 public class RunSimulationUseCase implements SimulationControlPort {
 
+    /**
+     * Usuario sintético propietario de la sesión de "Operación Día a Día".
+     * No corresponde a ninguna cuenta real, por lo que no choca con el límite de
+     * "una sesión activa por usuario" de los usuarios humanos ni aparece en
+     * GET /simulations/mine de nadie.
+     */
+    public static final String DAILY_OPS_USER = "__daily_ops__";
+
     private final SimulationRegistry          registry;
     private final Function<String, StatePublisher> publisherFactory;
     private final Map<String, AirportDataDTO>      airports;
@@ -185,6 +193,35 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 sessionId, simStart, simEnd, speedFactor);
 
         return sessionId;
+    }
+
+    // ── Operación Día a Día ─────────────────────────────────────────────────────
+
+    /**
+     * Lanza la sesión de "Operación Día a Día": una corrida en tiempo real anclada
+     * a la fecha real de hoy que refleja los planes de vuelo recurrentes del día.
+     *
+     * Reutiliza toda la maquinaria de start() (grafo, runner, publisher, hilos ALNS,
+     * inyectores y WebSocket) con la combinación soportada DB + REAL_TIME + ALNS_ONLY,
+     * pero con un usuario sintético propio para que conviva con las simulaciones
+     * manuales de los usuarios sin interferir.
+     *
+     * El llamador (DailyOperationsService) garantiza idempotencia: solo invoca este
+     * método cuando no hay ya una sesión día-a-día activa.
+     *
+     * @param simStart    instante de arranque (normalmente Instant.now())
+     * @param simEnd      fin del horizonte (lejano; con rolling horizon la memoria es acotada)
+     * @param speedFactor factor de velocidad (1.0 = tiempo real estricto)
+     * @return UUID de la sesión creada
+     */
+    public String startDailyOperations(Instant simStart, Instant simEnd, double speedFactor) {
+        StartSimulationCommand cmd = new StartSimulationCommand(
+                DAILY_OPS_USER,
+                SimulationConfig.DataSource.DB,
+                SimulationConfig.SolverTimingMode.REAL_TIME,
+                SimulationConfig.OptimizerMode.ALNS_ONLY,
+                simStart, simEnd, speedFactor);
+        return start(cmd);
     }
 
     // ── validación de combinación ─────────────────────────────────────────────

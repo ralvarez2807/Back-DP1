@@ -27,6 +27,12 @@ jwt:
 app:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:*}
+  # ── Operación Día a Día ──────────────────────────────────────────────────────
+  # Sesión en vivo permanente anclada a la fecha real de hoy, que refleja los
+  # planes de vuelo del día. Corre en su propio hilo desde el arranque.
+  daily-ops:
+    speed-factor: ${DAILY_OPS_SPEED_FACTOR:1.0}   # 1.0 = tiempo real estricto
+    horizon-days: ${DAILY_OPS_HORIZON_DAYS:14}    # fin de corrida (rolling horizon acota la memoria)
 
 # ── Base de datos ──────────────────────────────────────────────────────────────
 spring:

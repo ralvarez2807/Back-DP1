@@ -40,18 +40,17 @@ Base URL: `http://localhost:8080/api/v1`
 | ⏳ | POST | `/simulations/:id/disruptions` | inyecta cancelación/avería |
 | ✅ | GET | `/simulations/:id/dashboard` | métricas en tiempo real |
 | ✅ | GET | `/simulations/:id/snapshot` | estado completo |
-| 🔴 | GET | `/simulations/:id/flights` | lista vuelos con occupancyLevel — **NO IMPLEMENTADO** |
-| 🔴 | GET | `/simulations/:id/flights/:flightId` | detalle de vuelo con envíos a bordo — **NO IMPLEMENTADO** |
-| 🔴 | GET | `/simulations/:id/airports` | aeropuertos con carga en tiempo real — **NO IMPLEMENTADO** |
-| 🔴 | GET | `/simulations/:id/airports/:icao/inbound` | vuelos planificados entrantes — **NO IMPLEMENTADO** |
-| 🔴 | GET | `/simulations/:id/airports/:icao/outbound` | vuelos planificados salientes — **NO IMPLEMENTADO** |
-| 🔴 | GET | `/simulations/:id/airports/:icao/transit` | maletas esperando conexión — **NO IMPLEMENTADO** |
-| 🔴 | GET | `/simulations/:id/shipments/planned` | envíos con ruta asignada — **NO IMPLEMENTADO** |
-| 🔴 | GET | `/simulations/:id/shipments/in-flight` | envíos en el aire — **NO IMPLEMENTADO** |
-| 🔴 | GET | `/simulations/:id/shipments/delivered?hours=N` | entregas recientes — **NO IMPLEMENTADO** |
-| ⏳ | GET | `/simulations/:id/baggage/:baggageId` | tracking de una maleta |
-| ⏳ | GET | `/simulations/:id/baggage/:baggageId/route` | ruta completa de una maleta |
-| 🔴 | GET | `/simulations/:id/reports/summary` | resumen final de simulación — **NO IMPLEMENTADO** |
+| ✅ | GET | `/simulations/:id/flights` | lista vuelos con occupancyLevel |
+| ✅ | GET | `/simulations/:id/flights/:flightId` | detalle de vuelo con envíos a bordo |
+| ✅ | GET | `/simulations/:id/airports` | aeropuertos con carga en tiempo real |
+| ✅ | GET | `/simulations/:id/airports/:icao/inbound` | vuelos planificados entrantes |
+| ✅ | GET | `/simulations/:id/airports/:icao/outbound` | vuelos planificados salientes |
+| ✅ | GET | `/simulations/:id/airports/:icao/transit` | maletas esperando conexión |
+| ✅ | GET | `/simulations/:id/shipments` | todos los envíos con conteo por estado |
+| ✅ | GET | `/simulations/:id/shipments/:shipmentId` | detalle de un envío con sus maletas |
+| ✅ | GET | `/simulations/:id/baggage/:baggageId` | tracking de una maleta |
+| ✅ | GET | `/simulations/:id/baggage/:baggageId/route` | ruta completa de una maleta |
+| ✅ | GET | `/simulations/:id/reports/summary` | resumen de simulación |
 
 ---
 
@@ -400,7 +399,7 @@ Response `200`:
   "flights": [
     { "flightId": "SKBO-SEQM-19:00-20260103", "fromIcao": "SKBO", "toIcao": "SEQM",
       "depTime": "2026-01-03T00:00:00Z", "arrTime": "2026-01-03T01:00:00Z",
-      "status": "IN_FLIGHT", "load": 45, "capacity": 120 }
+      "status": "DEPARTED", "load": 45, "capacity": 120 }
   ],
   "baggages": [
     { "baggageId": "S1-B3", "status": "IN_FLIGHT", "currentIcao": "SKBO",
@@ -415,32 +414,30 @@ Response `200`:
 
 ---
 
-## 8. Vuelos (panel) 🔴
+## 8. Vuelos (panel) ✅
 
-> **No implementado.** Roadmap Fase 2 — E02, E03, E04, E05.
-
-`occupancyLevel` se calcula como: `EMPTY` = 0 %, `GREEN` ≤ 60 %, `AMBER` ≤ 85 %, `RED` > 85 %.  
-`status` de vuelo: `SCHEDULED` | `IN_FLIGHT` | `LANDED` | `CANCELLED`
+`occupancyLevel`: `EMPTY` = 0 %, `GREEN` ≤ 60 %, `AMBER` ≤ 85 %, `RED` > 85 %.  
+`status` de vuelo: `SCHEDULED` | `DEPARTED` | `ARRIVED` | `CANCELLED`
 
 ---
 
-### GET /simulations/:id/flights — 🔴
+### GET /simulations/:id/flights — ✅
 
-Lista todos los vuelos del horizonte con ocupación y semáforo.
+Lista todos los vuelos del horizonte activo con ocupación y semáforo.
 
 Response `200`:
 ```json
 [
   {
-    "flightId":      "SKBO-SEQM-19:00-20260103",
-    "fromIcao":      "SKBO",
-    "toIcao":        "SEQM",
-    "depTime":       "2026-01-03T19:00:00Z",
-    "arrTime":       "2026-01-03T20:00:00Z",
-    "status":        "IN_FLIGHT",
-    "load":          45,
-    "capacity":      120,
-    "occupancyPct":  37.5,
+    "flightId":       "SKBO-SEQM-19:00-20260103",
+    "fromIcao":       "SKBO",
+    "toIcao":         "SEQM",
+    "depTime":        "2026-01-03T19:00:00Z",
+    "arrTime":        "2026-01-03T20:00:00Z",
+    "status":         "DEPARTED",
+    "load":           45,
+    "capacity":       120,
+    "occupancyPct":   37.5,
     "occupancyLevel": "GREEN"
   }
 ]
@@ -448,28 +445,28 @@ Response `200`:
 
 ---
 
-### GET /simulations/:id/flights/:flightId — 🔴
+### GET /simulations/:id/flights/:flightId — ✅
 
-Detalle de un vuelo: igual que el anterior + envíos y maletas a bordo.
+Detalle de un vuelo: mismos campos + envíos y maletas a bordo (sólo maletas activas — pending/assigned).
 
 Response `200`:
 ```json
 {
-  "flightId":      "SKBO-SEQM-19:00-20260103",
-  "fromIcao":      "SKBO",
-  "toIcao":        "SEQM",
-  "depTime":       "2026-01-03T19:00:00Z",
-  "arrTime":       "2026-01-03T20:00:00Z",
-  "status":        "IN_FLIGHT",
-  "load":          45,
-  "capacity":      120,
-  "occupancyPct":  37.5,
+  "flightId":       "SKBO-SEQM-19:00-20260103",
+  "fromIcao":       "SKBO",
+  "toIcao":         "SEQM",
+  "depTime":        "2026-01-03T19:00:00Z",
+  "arrTime":        "2026-01-03T20:00:00Z",
+  "status":         "DEPARTED",
+  "load":           45,
+  "capacity":       120,
+  "occupancyPct":   37.5,
   "occupancyLevel": "GREEN",
   "shipments": [
     {
-      "shipmentId":  "S1",
-      "originIcao":  "SPJC",
-      "destIcao":    "SEQM",
+      "shipmentId":   "S1",
+      "originIcao":   "SPJC",
+      "destIcao":     "SEQM",
       "baggageCount": 3,
       "baggages": [
         { "baggageId": "S1-B1", "destIcao": "SEQM", "deadlineUtc": "2026-01-03T22:00:00Z" },
@@ -485,17 +482,15 @@ Errores: `404` vuelo no existe en el horizonte de la sesión
 
 ---
 
-## 9. Almacenes (panel) 🔴
+## 9. Almacenes (panel) ✅
 
-> **No implementado.** Roadmap Fase 3 — E17, E18, E20, E21, E23.
-
-`occupancyLevel` del almacén: `EMPTY` = 0 maletas, `GREEN` ≤ 60 %, `AMBER` ≤ 85 %, `RED` > 85 % de capacidad.
+`occupancyLevel`: `EMPTY` = 0 maletas, `GREEN` ≤ 60 %, `AMBER` ≤ 85 %, `RED` > 85 % de capacidad.
 
 ---
 
-### GET /simulations/:id/airports — 🔴
+### GET /simulations/:id/airports — ✅
 
-Lista todos los aeropuertos con carga en tiempo real. Distinto de `GET /data/airports` (estático): este refleja el estado vivo del grafo.
+Lista todos los aeropuertos con carga en tiempo real (maletas con `currentEdge = WaitEdge` en ese nodo). Distinto de `GET /data/airports` (estático).
 
 Response `200`:
 ```json
@@ -506,7 +501,6 @@ Response `200`:
     "continent":     "SOUTH_AMERICA",
     "load":          45,
     "capacity":      50,
-    "pending":       12,
     "occupancyPct":  90.0,
     "occupancyLevel": "RED"
   }
@@ -515,10 +509,10 @@ Response `200`:
 
 ---
 
-### GET /simulations/:id/airports/:icao/inbound — 🔴
+### GET /simulations/:id/airports/:icao/inbound — ✅
 
-Vuelos planificados que llegarán a este aeropuerto, con sus maletas asignadas.  
-Fuente: baggages en `assignedBaggages` cuya ruta incluye un `FlightEdge` con `toIcao == icao`.
+Vuelos futuros que llegarán a este aeropuerto con las maletas asignadas que llevan.  
+Fuente: `assignedBaggages` cuya `expectedRoute` incluye un `FlightEdge` con `toIcao == icao`.
 
 Response `200`:
 ```json
@@ -527,11 +521,11 @@ Response `200`:
   "simTime": "2026-01-03T14:22:00Z",
   "inbound": [
     {
-      "flightId":    "SPJC-SKBO-17:00-20260103",
-      "fromIcao":    "SPJC",
-      "arrTime":     "2026-01-03T19:00:00Z",
+      "flightId":     "SPJC-SKBO-17:00-20260103",
+      "fromIcao":     "SPJC",
+      "arrTime":      "2026-01-03T19:00:00Z",
       "baggageCount": 8,
-      "shipmentIds": ["S3", "S7"]
+      "shipmentIds":  ["S3", "S7"]
     }
   ]
 }
@@ -541,10 +535,10 @@ Errores: `404` aeropuerto no existe en la sesión
 
 ---
 
-### GET /simulations/:id/airports/:icao/outbound — 🔴
+### GET /simulations/:id/airports/:icao/outbound — ✅
 
-Vuelos planificados que saldrán de este aeropuerto, con sus maletas asignadas.  
-Fuente: baggages en `assignedBaggages` cuya próxima `FlightEdge` tiene `fromIcao == icao`.
+Vuelos futuros que saldrán de este aeropuerto con las maletas asignadas que llevan.  
+Fuente: `assignedBaggages` cuyo primer `FlightEdge` de `expectedRoute` tiene `fromIcao == icao`.
 
 Response `200`:
 ```json
@@ -553,21 +547,23 @@ Response `200`:
   "simTime": "2026-01-03T14:22:00Z",
   "outbound": [
     {
-      "flightId":    "SKBO-SEQM-19:00-20260103",
-      "toIcao":      "SEQM",
-      "depTime":     "2026-01-03T19:00:00Z",
+      "flightId":     "SKBO-SEQM-19:00-20260103",
+      "toIcao":       "SEQM",
+      "depTime":      "2026-01-03T19:00:00Z",
       "baggageCount": 45,
-      "shipmentIds": ["S1", "S2", "S4"]
+      "shipmentIds":  ["S1", "S2", "S4"]
     }
   ]
 }
 ```
 
+Errores: `404` aeropuerto no existe en la sesión
+
 ---
 
-### GET /simulations/:id/airports/:icao/transit — 🔴
+### GET /simulations/:id/airports/:icao/transit — ✅
 
-Maletas actualmente esperando conexión en este aeropuerto (currentEdge = WaitEdge en ese nodo).
+Maletas esperando conexión en este aeropuerto en este momento (`currentEdge = WaitEdge` en ese nodo).
 
 Response `200`:
 ```json
@@ -576,102 +572,106 @@ Response `200`:
   "simTime": "2026-01-03T14:22:00Z",
   "transit": [
     {
-      "baggageId":   "S3-B1",
-      "shipmentId":  "S3",
-      "destIcao":    "SEQM",
-      "deadlineUtc": "2026-01-03T22:00:00Z",
+      "baggageId":    "S3-B1",
+      "shipmentId":   "S3",
+      "destIcao":     "SEQM",
+      "deadlineUtc":  "2026-01-03T22:00:00Z",
       "nextFlightId": "SKBO-SEQM-19:00-20260103",
-      "nextDepTime": "2026-01-03T19:00:00Z"
+      "nextDepTime":  "2026-01-03T19:00:00Z"
     }
   ]
 }
 ```
 
-`nextFlightId` es `null` si el baggage está `PENDING` (sin ruta asignada todavía).
+`nextFlightId` / `nextDepTime` son `null` si la maleta está `PENDING` (sin ruta asignada todavía).
+
+Errores: `404` aeropuerto no existe en la sesión
 
 ---
 
-## 10. Envíos (panel) 🔴
+## 10. Envíos (panel) ✅
 
-> **No implementado.** Roadmap Fase 4 — E30, E31, E32.
+Los envíos agrupan maletas por `shipmentId`. Las maletas se obtienen de `pendingBaggages + assignedBaggages` (activas) y de `deliveredBaggages` del runner — conjuntos disjuntos, sin duplicados.
 
-Los envíos se reconstruyen agrupando maletas por `shipmentId` (prefijo del `baggageId`: `"S1-B3"` → `"S1"`).  
-Requiere que `SimulationSession` mantenga un `Map<String, Shipment>` activo.
+Categorías de conteo:
+- `delivered` — maletas entregadas en su destino
+- `noRoute` — maletas activas sin ruta asignada aún (ALNS pendiente)
+- `onTime` — maletas activas con ruta donde `estimatedArrival ≤ deadlineUtc`
+- `late` — maletas activas con ruta donde `estimatedArrival > deadlineUtc`
 
 ---
 
-### GET /simulations/:id/shipments/planned — 🔴
+### GET /simulations/:id/shipments — ✅
 
-Envíos con ruta asignada, esperando en un aeropuerto (baggages en estado `WAITING`).
+Lista todos los envíos con conteo agregado por estado de sus maletas.
 
 Response `200`:
 ```json
 [
   {
-    "shipmentId":  "S1",
-    "originIcao":  "SPJC",
-    "destIcao":    "SEQM",
-    "currentIcao": "SKBO",
-    "baggageCount": 3,
-    "nextFlightId": "SKBO-SEQM-19:00-20260103",
-    "nextDepTime": "2026-01-03T19:00:00Z",
-    "deadlineUtc": "2026-01-03T22:00:00Z"
+    "shipmentId":    "000008788",
+    "originIcao":    "SKBO",
+    "destIcao":      "SEQM",
+    "deadlineUtc":   "2026-01-03T22:00:00Z",
+    "totalBaggages": 3,
+    "delivered":     1,
+    "noRoute":       0,
+    "onTime":        2,
+    "late":          0
   }
 ]
 ```
 
 ---
 
-### GET /simulations/:id/shipments/in-flight — 🔴
+### GET /simulations/:id/shipments/:shipmentId — ✅
 
-Envíos actualmente en el aire (al menos una maleta en estado `IN_FLIGHT`).
-
-Response `200`:
-```json
-[
-  {
-    "shipmentId":     "S1",
-    "originIcao":     "SPJC",
-    "destIcao":       "SEQM",
-    "baggageCount":   3,
-    "currentFlightId": "SKBO-SEQM-19:00-20260103",
-    "fromIcao":       "SKBO",
-    "toIcao":         "SEQM",
-    "arrTime":        "2026-01-03T20:00:00Z",
-    "deadlineUtc":    "2026-01-03T22:00:00Z"
-  }
-]
-```
-
----
-
-### GET /simulations/:id/shipments/delivered?hours=N — 🔴
-
-Envíos entregados en las últimas `N` horas de tiempo **simulado** (default `hours=4`).  
-Requiere campo `deliveredAt: Instant` en `Baggage`.
+Detalle de un envío: cada maleta individualmente con su estado, posición, ETA y ruta.
 
 Response `200`:
 ```json
-[
-  {
-    "shipmentId":  "S2",
-    "originIcao":  "SPJC",
-    "destIcao":    "SEQM",
-    "baggageCount": 2,
-    "deliveredAt": "2026-01-03T12:30:00Z",
-    "deadlineUtc": "2026-01-03T14:00:00Z",
-    "onTime":      true
-  }
-]
+{
+  "shipmentId":    "000008788",
+  "originIcao":    "SKBO",
+  "destIcao":      "SEQM",
+  "deadlineUtc":   "2026-01-03T22:00:00Z",
+  "totalBaggages": 3,
+  "baggages": [
+    {
+      "baggageId":        "000008788-B1",
+      "status":           "DELIVERED",
+      "currentIcao":      "SEQM",
+      "estimatedArrival": null,
+      "onTime":           null,
+      "route":            []
+    },
+    {
+      "baggageId":        "000008788-B2",
+      "status":           "WAITING",
+      "currentIcao":      "SKBO",
+      "estimatedArrival": "2026-01-03T20:00:00Z",
+      "onTime":           true,
+      "route": [
+        { "fromIcao": "SKBO", "toIcao": "SEQM",
+          "depTime": "2026-01-03T19:00:00Z", "arrTime": "2026-01-03T20:00:00Z",
+          "state": "PLANNED" }
+      ]
+    }
+  ]
+}
 ```
 
-`onTime` = `deliveredAt <= deadlineUtc`
+`status`: `PENDING` | `WAITING` | `IN_FLIGHT` | `DELIVERED`  
+`state` de tramo: `ARRIVED` (recorrido) | `DEPARTED` (en vuelo ahora) | `PLANNED` (futuro)  
+`estimatedArrival` y `onTime` son `null` cuando la maleta no tiene ruta completa o ya fue entregada.
+
+Errores: `404` envío no existe en la sesión
 
 ---
 
 ## 11. Tracking
 
-### GET /simulations/:id/baggage/:baggageId — ⏳
+### GET /simulations/:id/baggage/:baggageId — ✅
 
 Response `200`:
 ```json
@@ -692,7 +692,7 @@ Errores: `404` maleta no existe en la sesión
 
 ---
 
-### GET /simulations/:id/baggage/:baggageId/route — ⏳
+### GET /simulations/:id/baggage/:baggageId/route — ✅
 
 Escalas recorridas + en curso + planificadas.
 
@@ -707,25 +707,26 @@ Response `200`:
   "legs": [
     { "fromIcao": "SPJC", "toIcao": "SKBO",
       "depTime": "2026-01-02T10:00:00Z", "arrTime": "2026-01-02T12:00:00Z",
-      "flightId": "SPJC-SKBO-10:00-20260102", "state": "TRAVELED" },
+      "flightId": "SPJC-SKBO-10:00-20260102", "state": "ARRIVED" },
     { "fromIcao": "SKBO", "toIcao": "SEQM",
       "depTime": "2026-01-03T19:00:00Z", "arrTime": "2026-01-03T20:00:00Z",
-      "flightId": "SKBO-SEQM-19:00-20260103", "state": "IN_FLIGHT" }
+      "flightId": "SKBO-SEQM-19:00-20260103", "state": "DEPARTED" }
   ]
 }
 ```
 
-`state`: `TRAVELED` | `IN_FLIGHT` | `PLANNED`
+`state`: `ARRIVED` (tramo completado) | `DEPARTED` (vuelo en curso ahora) | `PLANNED` (futuro)
 
 ---
 
-## 12. Reportes 🔴
+## 12. Reportes ✅
 
-> **No implementado.** Roadmap Fase 8 — G08, G09, G10.
-
-### GET /simulations/:id/reports/summary — 🔴
+### GET /simulations/:id/reports/summary — ✅
 
 Disponible en cualquier momento; más completo cuando `status = completed`.
+
+`topRoutes` — top 10 pares de aeropuertos con más tramos recorridos por maletas (de `routeTraveled`).  
+`throughputPerHour` — maletas entregadas / horas simuladas transcurridas.
 
 Response `200`:
 ```json
@@ -739,10 +740,9 @@ Response `200`:
   "slaBreaches":       34,
   "pending":           36,
   "inFlight":          0,
-  "avgDeliveryHours":  18.4,
   "throughputPerHour": 38.5,
   "topRoutes": [
-    { "fromIcao": "SKBO", "toIcao": "SEQM", "flightCount": 145 }
+    { "fromIcao": "SKBO", "toIcao": "SEQM", "count": 145 }
   ]
 }
 ```

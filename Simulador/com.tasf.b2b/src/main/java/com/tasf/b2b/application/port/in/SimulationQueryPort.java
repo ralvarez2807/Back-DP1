@@ -3,8 +3,14 @@ package com.tasf.b2b.application.port.in;
 import com.tasf.b2b.application.dto.BaggageRouteView;
 import com.tasf.b2b.application.dto.BaggageView;
 import com.tasf.b2b.application.dto.DashboardView;
+import com.tasf.b2b.application.dto.AirportLiveView;
+import com.tasf.b2b.application.dto.FlightView;
+import com.tasf.b2b.application.dto.ReportView;
+import com.tasf.b2b.application.dto.ShipmentView;
 import com.tasf.b2b.application.dto.SimSessionView;
 import com.tasf.b2b.application.dto.SnapshotView;
+
+import java.util.List;
 
 /**
  * Puerto de entrada para consultas de estado de una sesión de simulación.
@@ -56,4 +62,48 @@ public interface SimulationQueryPort {
      * @throws IllegalArgumentException si la sesión o la maleta no existen
      */
     BaggageRouteView getBaggageRoute(String sessionId, String baggageId);
+
+    /**
+     * Lista de todos los vuelos del horizonte activo con nivel de ocupación.
+     *
+     * @throws IllegalArgumentException si la sesión no existe
+     */
+    List<FlightView> getFlights(String sessionId);
+
+    /**
+     * Detalle de un vuelo: mismos campos que la lista + envíos y maletas a bordo.
+     *
+     * @throws IllegalArgumentException si la sesión no existe o el vuelo no está en el horizonte
+     */
+    FlightView.DetailView getFlightDetail(String sessionId, String flightId);
+
+    /**
+     * Lista de todos los envíos con conteo agregado por estado de sus maletas.
+     * Categorías: delivered, noRoute, onTime, late.
+     *
+     * @throws IllegalArgumentException si la sesión no existe
+     */
+    List<ShipmentView> getShipments(String sessionId);
+
+    /**
+     * Detalle de un envío: cada maleta individualmente con su ruta y estimación de llegada.
+     *
+     * @throws IllegalArgumentException si la sesión no existe o el envío no existe
+     */
+    ShipmentView.DetailView getShipmentDetail(String sessionId, String shipmentId);
+
+    /** Lista de aeropuertos con carga en tiempo real y nivel de ocupación. */
+    List<AirportLiveView> getAirports(String sessionId);
+
+    /** Vuelos futuros que llegarán a este aeropuerto con sus baggages asignados. */
+    AirportLiveView.InboundView getAirportInbound(String sessionId, String icao);
+
+    /** Vuelos futuros que saldrán de este aeropuerto con sus baggages asignados. */
+    AirportLiveView.OutboundView getAirportOutbound(String sessionId, String icao);
+
+    /** Baggages esperando conexión físicamente en este aeropuerto ahora. */
+    AirportLiveView.TransitView getAirportTransit(String sessionId, String icao);
+
+    /** Métricas finales de la simulación. */
+    ReportView getReport(String sessionId);
 }

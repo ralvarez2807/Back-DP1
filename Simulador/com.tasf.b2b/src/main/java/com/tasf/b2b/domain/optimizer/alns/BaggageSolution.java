@@ -61,19 +61,38 @@ public class BaggageSolution {
     }
 
     /**
-     * 1000 por baggage sin ruta + Σ max(0, arrTime − deadline) en horas.
-     * Penaliza fuerte no llegar y suave llegar tarde.
+     * Score multi-objetivo con tres niveles de prioridad:
+     *   1. 1000 pt por maleta sin ruta  (dominante)
+     *   2. horas de retraso sobre el deadline  (secundario)
+     *   3. TRANSIT_WEIGHT × horas de tránsito total  (tiebreaker)
+     *
+     * El nivel 3 garantiza que entre dos soluciones igualmente a tiempo,
+     * el ALNS prefiere la que entrega antes. El peso es lo bastante pequeño
+     * para que 24 h de tránsito extra (0.024 pts) nunca justifique aceptar
+     * 90 segundos de retraso (0.025 pts).
      */
+    private static final double TRANSIT_WEIGHT = 0.001;
+
     public double score() {
         double penalty = unrouted.size() * 1000.0;
         for (Map.Entry<BaggageState, List<FlightSnapshot>> e : routes.entrySet()) {
-            List<FlightSnapshot> route = e.getValue();
+            BaggageState         baggage = e.getKey();
+            List<FlightSnapshot> route   = e.getValue();
             if (route.isEmpty()) continue;
+
             Instant arrTime  = route.getLast().arrTime();
-            Instant deadline = e.getKey().deadline();
+            Instant deadline = baggage.deadline();
+
+            // Nivel 2: penalidad por llegada tardía
             long lateSeconds = Duration.between(deadline, arrTime).toSeconds();
             if (lateSeconds > 0) {
                 penalty += lateSeconds / 3600.0;
+            }
+
+            // Nivel 3: minimizar tránsito total (desde que está disponible hasta que llega)
+            long transitSeconds = Duration.between(baggage.availableFrom(), arrTime).toSeconds();
+            if (transitSeconds > 0) {
+                penalty += TRANSIT_WEIGHT * transitSeconds / 3600.0;
             }
         }
         return penalty;

@@ -22,11 +22,11 @@
 
 ### domain/simulator
 - [x] `SimulationClock` — reloj escalado, pausa/resume con totalPausedMs, effectiveWallTimeMs
-- [x] `SimulationRunner` — loop DelayQueue, switch pattern matching Java 21; `running=true` en `init()`; stats ALNS por iteración
+- [x] `SimulationRunner` — loop DelayQueue (REAL_TIME) o PriorityQueue (EVENT_DRIVEN), switch pattern matching Java 21; stats ALNS por iteración; `simNow()` devuelve tiempo correcto en cada modo; `collapseSimTime` captura el instante de colapso; `injectShipmentsUpTo(t)` drena el feed lazy **después** de cada lote (garantiza que HorizonExpandEvent expanda el grafo antes de que los shipments del mismo instante lleguen al ALNS); `pendingChanged` activa el ALNS inline solo cuando llegan nuevos envíos o cancelaciones afectan baggages
 - [x] `SimulationRunner.handleFlightDeparture` — WaitEdge → FlightEdge al embarcar
 - [x] `SimulationRunner.handleFlightArrival` — FlightEdge → WaitEdge al llegar; entrega si es destino; re-pende si ruta vacía
 - [x] `SimulationRunner.handleRouteSolution` — descarta rutas obsoletas (primer vuelo ya partió); aplica rutas válidas
-- [x] `SimulationConfig` — record: SolverTimingMode, OptimizerMode, DataSource, speedFactor, fechas, minutos de conexión
+- [x] `SimulationConfig` — record: SolverTimingMode, OptimizerMode, DataSource, speedFactor, fechas, minutos de conexión, `stopAtCollapse`
 - [x] `StatePublisher` — interface de dominio; extiende `AutoCloseable` (close() no-op por defecto); implementación concreta en `presentation/websocket/`
 - [x] Todos los eventos: `HorizonExpandEvent`, `FlightDepartureEvent`, `FlightArrivalEvent`, `FlightCancelledEvent`, `NewShipmentEvent`, `RouteSolutionEvent`, `SimulationEndEvent`
 - [x] DTOs internos (`domain/simulator/dto/`): `FlightScheduledDTO`, `FlightDepartedDTO`, `BaggageDepartedDTO`, `FlightArrivedDTO`, `BaggageArrivedDTO`, `BaggageDeliveredDTO`, `BaggagePendingDTO`, `FlightCancelledDTO`, `ShipmentCreatedDTO`, `BaggageAssignedDTO`
@@ -76,10 +76,10 @@
 - [x] `AvailableDaysPort` — interface in: `getAvailableDates() → List<LocalDate>`
 - [x] `SimulationRegistry` — doble mapa O(1): `sessions` (sessionId→sesión) + `byUser` (username→sessionId); `findOrThrow`, `findByUser`, `hasActiveSession` (STARTING/RUNNING/PAUSED), `remove` limpia ambos mapas
 - [x] `SimulationSession` — guarda `username` del creador + `StatePublisher` por sesión; `interruptAll()` llama `publisher.close()` además de interrumpir hilos
-- [x] `StartSimulationCommand` — record: username, dataSource, solverTimingMode, optimizerMode, simStart, simEnd, speedFactor
-- [x] `RunSimulationUseCase implements SimulationControlPort` — recibe `Function<String, StatePublisher>` factory; verifica `hasActiveSession` antes de crear (→ 409); crea publisher por sesión; `validateCombination()` lanza `UnsupportedOperationException` para modos no implementados
-- [x] `QuerySimulationUseCase implements SimulationQueryPort` — implementa todos los métodos del puerto; usa `pendingBaggages + assignedBaggages` (no `allBaggages`) para evitar doble conteo de maletas entregadas
-- [x] `application/dto/` — `SimSessionView`, `DashboardView`, `BaggageView`, `BaggageRouteView`, `SnapshotView`, `FlightView` (con `DetailView`, `ShipmentOnFlight`, `BaggageOnFlight`), `ShipmentView` (con `DetailView`, `BaggageDetail`, `Leg`), `AirportLiveView` (con `InboundView`, `OutboundView`, `TransitView`), `ReportView`
+- [x] `StartSimulationCommand` — record: username, dataSource, solverTimingMode, optimizerMode, simStart, simEnd, speedFactor, `stopAtCollapse`
+- [x] `RunSimulationUseCase implements SimulationControlPort` — recibe `Function<String, StatePublisher>` factory; verifica `hasActiveSession` antes de crear (→ 409); crea publisher por sesión; `validateCombination()` lanza `UnsupportedOperationException` para modos no implementados; en EVENT_DRIVEN pasa el feed al runner vía `setShipmentFeed()` (carga lazy) en vez de pre-cargar todo; sesión permanece en registry al completarse (solo se elimina con `stop()` explícito) para permitir consultar reportes post-simulación
+- [x] `QuerySimulationUseCase implements SimulationQueryPort` — implementa todos los métodos del puerto; usa `pendingBaggages + assignedBaggages` (no `allBaggages`) para evitar doble conteo de maletas entregadas; usa `runner.simNow()` (no `clock.now()`) para obtener el tiempo correcto en EVENT_DRIVEN
+- [x] `application/dto/` — `SimSessionView` (incluye `collapseSimTime`), `DashboardView`, `BaggageView`, `BaggageRouteView`, `SnapshotView`, `FlightView` (con `DetailView`, `ShipmentOnFlight`, `BaggageOnFlight`), `ShipmentView` (con `DetailView`, `BaggageDetail`, `Leg`), `AirportLiveView` (con `InboundView`, `OutboundView`, `TransitView`), `ReportView`
 
 ### presentation/rest
 - [x] `TasfApplication` — `@SpringBootApplication` main
@@ -112,6 +112,10 @@
 - [x] shipments list y detail (incluyendo fix de duplicado por `allBaggages`)
 - [x] baggage tracking y route
 - [x] reports summary
+- [ ] simulación EVENT_DRIVEN completa hasta `simEnd` (verificar que `simTime` avanza evento a evento, no queda pegado en `simStart`)
+- [ ] `stopAtCollapse=true` en REAL_TIME: confirmar que la sesión pasa a `completed` al primer ALNS con `score > 0` y que `collapseSimTime` aparece en la respuesta
+- [ ] `stopAtCollapse=true` en EVENT_DRIVEN: igual que el anterior pero con saltos de tiempo simulado
+- [ ] `collapseSimTime` en respuesta de `GET /simulations/:id` cuando la sesión ya terminó por colapso
 - [ ] disrupciones (`POST /simulations/:id/disruptions`)
 - [ ] admin merge (airports, flights) y DELETEs (shipments, historical)
 
@@ -120,7 +124,7 @@
 - [x] `SpaceTimeGraphTest` — 13 tests: expansión, cancelación, assign/unassign, getBaggagesAffectedBy
 - [x] `SimulationClockTest` — 7 tests: pausa/resume, escala de tiempo, toWallDeadlineMs
 - [x] `RouteFinderTest` — 8 tests: ruta directa, escalas, deadline, capacidad, blacklist
-- [x] `BaggageSolutionTest` — 10 tests: score, deepCopy, flightHasCapacity, addRoute/removeRoute
+- [x] `BaggageSolutionTest` — 10 tests: score (3 niveles: unrouted×1000, retraso en horas, tránsito×0.001 como tiebreaker), deepCopy, flightHasCapacity, addRoute/removeRoute
 
 ---
 
@@ -131,7 +135,6 @@
 
 ### Modos de timing del optimizador
 - [ ] `PAUSE` — runner pausa el reloj antes de lanzar el optimizador; reanuda al recibir `RouteSolutionEvent`
-- [ ] `EVENT_DRIVEN` — sin reloj de pared; avanza evento a evento
 
 ### infrastructure/persistence — histórico
 - [ ] `PostgreSQLFlightRepository implements HistoricalFlightRepository`

@@ -10,7 +10,8 @@ public record SimulationConfig(
         Instant          simEnd,
         DataSource       dataSource,
         int              minConnectionMinutes,
-        int              pickupMinutes
+        int              pickupMinutes,
+        boolean          stopAtCollapse   // para cuando el ALNS devuelva score > 0
 ) {
     public enum SolverTimingMode { REAL_TIME, PAUSE, EVENT_DRIVEN }
 
@@ -32,7 +33,8 @@ public record SimulationConfig(
                 simEnd,
                 DataSource.DB,
                 10,
-                10
+                10,
+                false
         );
     }
 }

@@ -126,7 +126,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
         // ── 4. Configuración y runner ─────────────────────────────────────────
         SimulationConfig config = new SimulationConfig(
                 cmd.solverTimingMode(), cmd.optimizerMode(), speedFactor,
-                simStart, simEnd, cmd.dataSource(), 10, 10);
+                simStart, simEnd, cmd.dataSource(), 10, 10, cmd.stopAtCollapse());
         SimulationRunner runner = new SimulationRunner(graph, config, publisher);
         runner.init(); // siembra HorizonExpandEvent y SimulationEndEvent en la cola
 
@@ -140,54 +140,54 @@ public class RunSimulationUseCase implements SimulationControlPort {
         SimulationSession session = new SimulationSession(sessionId, cmd.username(), runner, graph, config, publisher);
 
         // ── 7. Hilo del runner (no-daemon) ────────────────────────────────────
-        // Es el único hilo no-daemon: la JVM espera a que termine.
-        // El wrapper actualiza el status de la sesión cuando el runner finaliza.
         Thread simThread = new Thread(() -> {
             session.setStatus(SimulationSession.SimStatus.RUNNING);
             runner.run();
-            // Si llegamos aquí, el SimulationEndEvent disparó y el loop terminó
             if (session.getStatus() != SimulationSession.SimStatus.STOPPED) {
                 session.setStatus(SimulationSession.SimStatus.COMPLETED);
+                // La sesión se mantiene en el registry para que el usuario pueda
+                // consultar el reporte y el collapseSimTime. Se elimina solo con stop().
             }
-            registry.remove(sessionId); // liberar recursos del registry al terminar
         }, "simulation-runner-" + sessionId);
         simThread.setDaemon(false);
 
-        // ── 8. Hilos inyectores (daemon) ──────────────────────────────────────
-        // Daemon = mueren solos si el simThread (no-daemon) termina.
-        Thread shipmentThread = new Thread(
-                new ShipmentInjectorThread(runner, clock, shipmentFeed, simStart, simEnd),
-                "shipment-injector-" + sessionId);
-        shipmentThread.setDaemon(true);
-
-        Thread cancellationThread = new Thread(
-                new CancellationInjectorThread(runner, clock, cancellationFeed, simStart, simEnd),
-                "cancellation-injector-" + sessionId);
-        cancellationThread.setDaemon(true);
-
-        // ── 9. Hilos de optimización (daemon) ─────────────────────────────────
-        // isActive=true → el hilo envía RouteSolutionEvent al runner (afecta la simulación)
-        // isActive=false → solo evalúa métricas, no modifica nada (modo comparación)
-        List<Thread> optimizerThreads = buildOptimizerThreads(runner, clock, config, sessionId);
-        optimizerThreads.forEach(t -> t.setDaemon(true));
-
-        // ── 10. Registrar todos los hilos en la sesión para poder pararlos ────
         List<Thread> allThreads = new ArrayList<>();
         allThreads.add(simThread);
-        allThreads.add(shipmentThread);
-        allThreads.add(cancellationThread);
-        allThreads.addAll(optimizerThreads);
-        session.setAllThreads(allThreads);
 
-        // ── 11. Registrar la sesión ANTES de arrancar hilos ──────────────────
-        // Si alguien hace GET /simulations/:id justo después del POST, debe encontrarla.
+        if (cmd.solverTimingMode() == SimulationConfig.SolverTimingMode.EVENT_DRIVEN) {
+            // ── EVENT_DRIVEN: feed lazy + ALNS síncrono en el hilo del runner ─────
+            runner.setInlineOptimizer(new ALNSAlgorithm());
+            runner.setShipmentFeed(shipmentFeed); // el runner consume el feed conforme avanza simTime
+        } else {
+            // ── REAL_TIME: hilos inyectores + hilos de optimización ────────────────
+            Thread shipmentThread = new Thread(
+                    new ShipmentInjectorThread(runner, clock, shipmentFeed, simStart, simEnd),
+                    "shipment-injector-" + sessionId);
+            shipmentThread.setDaemon(true);
+
+            Thread cancellationThread = new Thread(
+                    new CancellationInjectorThread(runner, clock, cancellationFeed, simStart, simEnd),
+                    "cancellation-injector-" + sessionId);
+            cancellationThread.setDaemon(true);
+
+            List<Thread> optimizerThreads = buildOptimizerThreads(runner, clock, config, sessionId);
+            optimizerThreads.forEach(t -> t.setDaemon(true));
+
+            allThreads.add(shipmentThread);
+            allThreads.add(cancellationThread);
+            allThreads.addAll(optimizerThreads);
+
+            shipmentThread.start();
+            cancellationThread.start();
+            optimizerThreads.forEach(Thread::start);
+        }
+
+        // ── Registrar la sesión ANTES de arrancar el hilo del runner ─────────
+        session.setAllThreads(allThreads);
         registry.register(session);
 
-        // ── 12. Arranque ──────────────────────────────────────────────────────
-        shipmentThread.start();
-        cancellationThread.start();
-        optimizerThreads.forEach(Thread::start);
-        simThread.start(); // último: el grafo ya tiene vuelos en cola antes de que ALNS empiece
+        // ── Arranque del runner ───────────────────────────────────────────────
+        simThread.start();
 
         System.out.printf("[SIM] Sesión %s iniciada: %s → %s (x%.1f)%n",
                 sessionId, simStart, simEnd, speedFactor);
@@ -220,7 +220,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 SimulationConfig.DataSource.DB,
                 SimulationConfig.SolverTimingMode.REAL_TIME,
                 SimulationConfig.OptimizerMode.ALNS_ONLY,
-                simStart, simEnd, speedFactor);
+                simStart, simEnd, speedFactor, false);
         return start(cmd);
     }
 
@@ -236,9 +236,10 @@ public class RunSimulationUseCase implements SimulationControlPort {
         // if (cmd.dataSource() == MANUAL && registry.hasManualSession())
         //     throw new IllegalStateException("Ya existe una sesión MANUAL activa");
 
-        if (cmd.solverTimingMode() != SimulationConfig.SolverTimingMode.REAL_TIME)
+        if (cmd.solverTimingMode() != SimulationConfig.SolverTimingMode.REAL_TIME
+                && cmd.solverTimingMode() != SimulationConfig.SolverTimingMode.EVENT_DRIVEN)
             throw new UnsupportedOperationException(
-                    "solverTimingMode '" + cmd.solverTimingMode() + "' no implementado. Disponible: REAL_TIME");
+                    "solverTimingMode '" + cmd.solverTimingMode() + "' no implementado. Disponibles: REAL_TIME, EVENT_DRIVEN");
 
         if (cmd.optimizerMode() != SimulationConfig.OptimizerMode.ALNS_ONLY)
             throw new UnsupportedOperationException(

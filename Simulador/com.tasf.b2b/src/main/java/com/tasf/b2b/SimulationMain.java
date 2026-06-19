@@ -41,7 +41,7 @@ import java.util.Map;
 public class SimulationMain {
 
     private static final Instant SIM_START    = Instant.parse("2026-01-02T00:00:00Z");
-    private static final Instant SIM_END      = Instant.parse("2026-01-02T12:00:00Z"); // medio día
+    private static final Instant SIM_END      = Instant.parse("2026-01-03T00:00:00Z"); // 1 día → ~18 min reales
     private static final double  SPEED_FACTOR = 80.0;
 
     public static void main(String[] args) throws Exception {

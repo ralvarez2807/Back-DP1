@@ -63,9 +63,10 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         return new SimSessionView(
                 session.getId(),
                 session.getStatus().name().toLowerCase(),
-                runner.getClock().now(),
+                runner.simNow(),
                 session.getConfig().simStart(),
-                session.getConfig().simEnd());
+                session.getConfig().simEnd(),
+                runner.getCollapseSimTime());
     }
 
     @Override
@@ -76,9 +77,10 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         return new SimSessionView(
                 session.getId(),
                 session.getStatus().name().toLowerCase(),
-                runner.getClock().now(),
+                runner.simNow(),
                 session.getConfig().simStart(),
-                session.getConfig().simEnd());
+                session.getConfig().simEnd(),
+                runner.getCollapseSimTime());
     }
 
     // ── getDashboard ──────────────────────────────────────────────────────────
@@ -88,8 +90,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         SimulationSession session = registry.findOrThrow(sessionId);
         SimulationRunner  runner  = session.getRunner();
         SpaceTimeGraph    graph   = session.getGraph();
-        SimulationClock   clock   = runner.getClock();
-        Instant           simNow  = clock.now();
+        Instant           simNow  = runner.simNow();
 
         // Hacer snapshots locales de las colecciones para que el cálculo
         // sea consistente aunque el runner modifique las colas mientras calculamos
@@ -240,7 +241,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         SimulationSession session = registry.findOrThrow(sessionId);
         SimulationRunner  runner  = session.getRunner();
         SpaceTimeGraph    graph   = session.getGraph();
-        Instant           simNow  = runner.getClock().now();
+        Instant           simNow  = runner.simNow();
 
         // Vuelos en el horizonte actual
         List<SnapshotView.FlightSnap> flights = new ArrayList<>();
@@ -342,7 +343,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
     @Override
     public List<FlightView> getFlights(String sessionId) {
         SimulationSession session = registry.findOrThrow(sessionId);
-        Instant simNow = session.getRunner().getClock().now();
+        Instant simNow = session.getRunner().simNow();
         List<FlightView> result = new ArrayList<>();
         for (FlightEdge fe : session.getGraph().getAllFlightEdges()) {
             result.add(toFlightView(fe, simNow));
@@ -355,7 +356,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
     @Override
     public FlightView.DetailView getFlightDetail(String sessionId, String flightId) {
         SimulationSession session = registry.findOrThrow(sessionId);
-        Instant simNow = session.getRunner().getClock().now();
+        Instant simNow = session.getRunner().simNow();
         SpaceTimeGraph graph = session.getGraph();
 
         FlightEdge target = graph.getAllFlightEdges().stream()
@@ -601,7 +602,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
     public AirportLiveView.InboundView getAirportInbound(String sessionId, String icao) {
         SimulationSession session = registry.findOrThrow(sessionId);
         SpaceTimeGraph    graph   = session.getGraph();
-        Instant           simNow  = session.getRunner().getClock().now();
+        Instant           simNow  = session.getRunner().simNow();
 
         requireAirport(graph, icao);
 
@@ -643,7 +644,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
     public AirportLiveView.OutboundView getAirportOutbound(String sessionId, String icao) {
         SimulationSession session = registry.findOrThrow(sessionId);
         SpaceTimeGraph    graph   = session.getGraph();
-        Instant           simNow  = session.getRunner().getClock().now();
+        Instant           simNow  = session.getRunner().simNow();
 
         requireAirport(graph, icao);
 
@@ -684,7 +685,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
     public AirportLiveView.TransitView getAirportTransit(String sessionId, String icao) {
         SimulationSession session = registry.findOrThrow(sessionId);
         SpaceTimeGraph    graph   = session.getGraph();
-        Instant           simNow  = session.getRunner().getClock().now();
+        Instant           simNow  = session.getRunner().simNow();
 
         requireAirport(graph, icao);
 
@@ -720,7 +721,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         SimulationSession session = registry.findOrThrow(sessionId);
         SimulationRunner  runner  = session.getRunner();
         SpaceTimeGraph    graph   = session.getGraph();
-        Instant           simNow  = runner.getClock().now();
+        Instant           simNow  = runner.simNow();
 
         List<Baggage> active = new ArrayList<>();
         active.addAll(new ArrayList<>(graph.getPendingBaggages()));

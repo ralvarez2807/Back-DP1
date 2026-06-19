@@ -88,17 +88,19 @@ Núcleo de la simulación: reloj, runner, configuración, y las interfaces que e
 
 | Clase | Descripción |
 |---|---|
-| `SimulationRunner` | Loop principal sobre `DelayQueue<SimEvent>`. Único hilo que escribe `SpaceTimeGraph`. Despacha eventos por `switch` pattern matching. Recibe `StatePublisher` por constructor. `running` se activa en `init()` (no en `run()`) para que los hilos optimizadores no salgan al arrancar antes de que el runner empiece. Acumula stats de soluciones ALNS (`solutionCount`, `totalProposed`, `totalStale`, `totalApplied`) y las expone con getters para el resumen final. |
+| `SimulationRunner` | Loop principal. Despacha eventos por `switch` pattern matching. Soporta dos modos según `SimulationConfig.solverTimingMode`: **REAL_TIME** (consume `DelayQueue<SimEvent>` con delay real) y **EVENT_DRIVEN** (consume `PriorityQueue<SimEvent>` sin delay — salta de instante en instante). En EVENT_DRIVEN el feed de envíos se consume de forma **lazy** mediante `injectShipmentsUpTo(t)`: **después** de procesar cada lote en el instante `t`, drena del `ShipmentFeed` todos los envíos con `entryDateTime ≤ t` y los inserta en la cola. Inyectar post-lote garantiza que `HorizonExpandEvent` (que expande el grafo) siempre se procese antes de que los shipments del mismo instante lleguen al ALNS — si se inyectaran antes, el ALNS no encontraría vuelos y colapsaría de inmediato. El ALNS inline (`inlineOptimizer`) corre síncrono solo cuando `pendingChanged = true` (nuevo envío o baggage re-pendiente por cancelación o llegada sin ruta). `simNow()` devuelve el tiempo simulado correcto para ambos modos. `collapseSimTime` registra el primer instante en que `score > 0` cuando `stopAtCollapse = true`. |
 | `SimulationClock` | Reloj escalado con factor de velocidad. Soporta `pause()` / `resume()` sin perder el tiempo transcurrido (`totalPausedMs`). Expone `now()`, `effectiveWallTimeMs()`, `toWallDeadlineMs(Instant)`. |
-| `SimulationConfig` | Record inmutable con todos los parámetros de una corrida: `SolverTimingMode`, `OptimizerMode`, `DataSource`, `speedFactor`, `simStart`, `simEnd`, `minConnectionMinutes`, `pickupMinutes`. |
+| `SimulationConfig` | Record inmutable con todos los parámetros de una corrida: `SolverTimingMode`, `OptimizerMode`, `DataSource`, `speedFactor`, `simStart`, `simEnd`, `minConnectionMinutes`, `pickupMinutes`, `stopAtCollapse`. |
 | `StatePublisher` | **Interface de dominio** — define lo que el simulador necesita publicar hacia el exterior. `infrastructure/redis/RedisStatePublisher` la implementa. Sigue el patrón de "puerto requerido": el dominio define la interfaz, la infraestructura provee la implementación. |
 
 ```java
 // SimulationConfig — enums
 enum SolverTimingMode { REAL_TIME, PAUSE, EVENT_DRIVEN }
 enum OptimizerMode    { ALNS_ONLY, GENETIC_ONLY, ALNS_ACTIVE_GENETIC_EVAL, GENETIC_ACTIVE_ALNS_EVAL }
-enum DataSource       { TXT, MANUAL }
+enum DataSource       { DB, MANUAL }
 ```
+
+`stopAtCollapse = true` hace que la simulación pare en cuanto el ALNS devuelva `score > 0` (algún envío llegará tarde o no tiene ruta). El `simEnd` sigue actuando como techo de seguridad.
 
 ---
 
@@ -124,8 +126,8 @@ Interfaces que abstraen la fuente de datos de entrada del simulador. El hilo iny
 
 | Interface | Contrato |
 |---|---|
-| `ShipmentFeed` | Entrega `ShipmentDataDTO` en orden cronológico. El thread consume hasta que se agota o se interrumpe. |
-| `CancellationFeed` | Entrega entradas de cancelación en orden cronológico. |
+| `ShipmentFeed` | Entrega `ShipmentDataDTO` en orden cronológico vía `next()`. En REAL_TIME lo consume `ShipmentInjectorThread`; en EVENT_DRIVEN lo consume el propio runner de forma lazy (un buffer de un elemento). |
+| `CancellationFeed` | Entrega entradas de cancelación en orden cronológico. Solo REAL_TIME la usa (vía `CancellationInjectorThread`). |
 
 Implementaciones en `infrastructure/files/` (txt) y `infrastructure/api/` (manual/futuro).
 
@@ -241,7 +243,7 @@ Records de resultado que los use cases devuelven a la capa de presentación.
 
 | Record | Campos |
 |---|---|
-| `SimSessionView` | id, status, simTime, simStart, simEnd |
+| `SimSessionView` | id, status, simTime, simStart, simEnd, collapseSimTime (null si no hubo colapso) |
 | `DashboardView` | simTime, delivered, pending, assigned, inFlight, slaBreaches, throughputPerHour |
 | `BaggageView` | baggageId, status, currentIcao, flightId, destIcao, deadlineUtc |
 
@@ -253,7 +255,7 @@ Records de resultado que los use cases devuelven a la capa de presentación.
 |---|---|
 | `SimulationRegistry` | `ConcurrentHashMap<sessionId, SimulationSession>`. Permite hasta dos sesiones simultáneas. `findOrThrow` lanza `IllegalArgumentException` → HTTP 404. |
 | `SimulationSession` | Contenedor de una sesión activa: runner, grafo, config, lista de hilos, status `volatile`. `interruptAll()` detiene todos los hilos de forma limpia. |
-| `RunSimulationUseCase` | Implementa `SimulationControlPort`. Calcula speedFactor automático (simDuration / 900 s reales objetivo). Construye grafo, instancia feeds y todos los hilos. También implementa pause/resume/stop. |
+| `RunSimulationUseCase` | Implementa `SimulationControlPort`. Calcula speedFactor automático (simDuration / 900 s reales objetivo). Construye grafo, instancia feeds y todos los hilos. También implementa pause/resume/stop. Al completarse naturalmente, la sesión permanece en el registry con `status=completed` para que el usuario pueda consultar el reporte y `collapseSimTime`; solo se elimina con `stop()` explícito. |
 | `QuerySimulationUseCase` | Implementa `SimulationQueryPort`. Lee en tiempo real del grafo en memoria. Deriva `DashboardView` (métricas agregadas) y `BaggageView` (status desde `currentEdge` + `isUnassigned`). |
 | `QueryCurrentStateUseCase` | *(pendiente)* Si `instant >= marginLowerCompleted` → SpaceTimeGraph. Si antes → PostgreSQL. |
 
@@ -451,6 +453,7 @@ Formato de cada mensaje WebSocket:
 
 ## Modelo de hilos
 
+**Modo REAL_TIME:**
 ```
 simulation-runner        (no-daemon)  ← único escritor de SpaceTimeGraph
 shipment-injector        (daemon)     ← consume ShipmentFeed, pause-aware
@@ -463,6 +466,13 @@ redis-publisher          (daemon)     ← BlockingQueue → Redis, sin tocar el 
 ```
 Los hilos `*-eval-thread` solo se arrancan en los modos `ALNS_ACTIVE_GENETIC_EVAL` y `GENETIC_ACTIVE_ALNS_EVAL`.
 
+**Modo EVENT_DRIVEN:**
+```
+simulation-runner        (no-daemon)  ← único hilo; drena feed lazy + procesa eventos + llama ALNS inline
+redis-publisher          (daemon)     ← BlockingQueue → Redis, sin tocar el grafo
+```
+No hay hilos inyectores ni de optimización. El runner consume el `ShipmentFeed` directamente dentro del loop principal (`injectShipmentsBeforeNext`), inyectando solo los envíos cuyo `entryDateTime ≤` al próximo evento en cola.
+
 Toda comunicación entre hilos pasa por `runner.submit(SimEvent)` o por la `BlockingQueue` del publisher. No hay locks en `SpaceTimeGraph` porque solo un hilo lo escribe.
 
 ---
@@ -473,7 +483,27 @@ Toda comunicación entre hilos pasa por `runner.submit(SimEvent)` o por la `Bloc
 |---|---|
 | `REAL_TIME` | El thread optimizador corre en paralelo. Si la solución llega después de que un vuelo partió, ese tramo se descarta y el baggage queda en pending para re-enrute en la siguiente iteración. El porcentaje de rutas obsoletas es inversamente proporcional al `SPEED_FACTOR` — a mayor velocidad, más obsolescencia. |
 | `PAUSE` | El runner pausa el reloj antes de lanzar el optimizador; reanuda al recibir `RouteSolutionEvent`. Garantiza soluciones sin obsolescencia. *(pendiente de implementar)* |
-| `EVENT_DRIVEN` | Sin reloj de pared. El runner avanza de evento en evento; el optimizador calcula entre cada par. *(pendiente de implementar)* |
+| `EVENT_DRIVEN` | Sin reloj de pared ni hilos adicionales. El runner salta de instante en instante procesando lotes de eventos; **después** de cada lote llama a `injectShipmentsUpTo(t)` para drena del feed los envíos con `entryDateTime ≤ t`. El orden post-lote garantiza que `HorizonExpandEvent` expanda el grafo antes de que los primeros envíos lleguen al ALNS. El ALNS corre síncrono solo cuando `pendingChanged = true`. Sin obsolescencia posible. `speedFactor` se ignora. |
+
+## Score del ALNS (`BaggageSolution.score`)
+
+El score tiene tres niveles de prioridad decreciente:
+
+| Nivel | Componente | Peso |
+|---|---|---|
+| 1 | Maletas sin ruta (`unroutedCount`) | 1000 pt por maleta |
+| 2 | Retraso sobre deadline | horas de retraso (exacto) |
+| 3 | Tiempo de tránsito total | `0.001 × horas_tránsito` (tiebreaker) |
+
+El nivel 3 diferencia soluciones igualmente a tiempo: el ALNS prefiere la que entrega antes. El peso garantiza que 24 h de tránsito extra (0.024 pts) nunca justifique aceptar 90 segundos de retraso (0.025 pts).
+
+## Detección de colapso (`stopAtCollapse`)
+
+Cuando `SimulationConfig.stopAtCollapse = true`, el runner para en cuanto el ALNS devuelve `score > 0` (primer retraso planificado o primera maleta sin ruta). Funciona en ambos modos:
+- **REAL_TIME**: detectado en `handleRouteSolution` al recibir un `RouteSolutionEvent` con score > 0.
+- **EVENT_DRIVEN**: detectado en `applyRoutesEventDriven` inmediatamente tras cada llamada al ALNS inline.
+
+`collapseSimTime` queda registrado en el runner y se expone en `GET /simulations/:id` como `collapseSimTime`. El `simEnd` sigue siendo el techo de seguridad si no hay colapso.
 
 ---
 

@@ -51,7 +51,8 @@ public class SimulationController {
             String  optimizerMode,
             Instant simStart,
             Instant simEnd,
-            Double  speedFactor
+            Double  speedFactor,
+            Boolean stopAtCollapse   // opcional, default false
     ) {}
 
     /**
@@ -59,9 +60,10 @@ public class SimulationController {
      * simTime es el tiempo dentro de la simulación (no el reloj de pared).
      */
     record SessionResponse(String id, String status, Instant simTime,
-                           Instant simStart, Instant simEnd) {
+                           Instant simStart, Instant simEnd, Instant collapseSimTime) {
         static SessionResponse from(SimSessionView v) {
-            return new SessionResponse(v.id(), v.status(), v.simTime(), v.simStart(), v.simEnd());
+            return new SessionResponse(v.id(), v.status(), v.simTime(),
+                    v.simStart(), v.simEnd(), v.collapseSimTime());
         }
     }
 
@@ -84,14 +86,19 @@ public class SimulationController {
         SimulationConfig.OptimizerMode    om  = parseEnum(SimulationConfig.OptimizerMode.class,    req.optimizerMode(),    "optimizerMode");
 
         if (ds == SimulationConfig.DataSource.DB) {
-            if (req.simStart()    == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido para DB: simStart");
-            if (req.simEnd()      == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido para DB: simEnd");
-            if (req.speedFactor() == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido para DB: speedFactor");
-            if (req.speedFactor() <= 0)    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "speedFactor debe ser mayor que 0");
+            if (req.simStart() == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido para DB: simStart");
+            if (req.simEnd()   == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido para DB: simEnd");
+            // EVENT_DRIVEN no usa reloj de pared — speedFactor es opcional (se ignora)
+            if (stm != SimulationConfig.SolverTimingMode.EVENT_DRIVEN) {
+                if (req.speedFactor() == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido para DB: speedFactor");
+                if (req.speedFactor() <= 0)    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "speedFactor debe ser mayor que 0");
+            }
         }
 
+        double  speedFactor     = (req.speedFactor() != null && req.speedFactor() > 0) ? req.speedFactor() : 1.0;
+        boolean stopAtCollapse  = Boolean.TRUE.equals(req.stopAtCollapse());
         StartSimulationCommand cmd = new StartSimulationCommand(principal.getName(), ds, stm, om,
-                req.simStart(), req.simEnd(), req.speedFactor());
+                req.simStart(), req.simEnd(), speedFactor, stopAtCollapse);
 
         String sessionId = controlPort.start(cmd);
         return SessionResponse.from(queryPort.getSession(sessionId));

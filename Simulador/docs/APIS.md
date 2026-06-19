@@ -31,7 +31,9 @@ Base URL: `http://localhost:8080/api/v1`
 | ✅ | GET | `/data/available-days` | |
 | ✅ | GET | `/data/airports` | referencia estática, sin carga en tiempo real |
 | ✅ | GET | `/data/routes` | |
-| ✅ | POST | `/simulations` | crea e inicia sesión; 409 si el usuario ya tiene una activa |
+| ✅ | POST | `/simulations` | crea e inicia sesión; 409 si el usuario ya tiene una activa; `speedFactor` opcional en EVENT_DRIVEN |
+| ⏳ | POST | `/simulations` | modo EVENT_DRIVEN hasta `simEnd` |
+| ⏳ | POST | `/simulations` | `stopAtCollapse=true` — sesión termina al primer colapso, `collapseSimTime` en respuesta |
 | ✅ | GET | `/simulations/mine` | sesión activa del usuario autenticado |
 | ✅ | GET | `/simulations/:id` | estado de la sesión |
 | ✅ | POST | `/simulations/:id/pause` | 409 si no está running |
@@ -252,9 +254,7 @@ Response `200`:
 
 ### POST /simulations — ✅
 
-Todos los campos son obligatorios. No hay valores por defecto.
-
-**Modo DB** — simula con datos históricos precargados:
+**Modo DB + REAL_TIME** — simula con datos históricos precargados y reloj de pared acelerado:
 ```json
 {
   "dataSource":       "DB",
@@ -263,6 +263,18 @@ Todos los campos son obligatorios. No hay valores por defecto.
   "simStart":         "2026-01-02T00:00:00Z",
   "simEnd":           "2026-01-07T00:00:00Z",
   "speedFactor":      480.0
+}
+```
+
+**Modo DB + EVENT_DRIVEN** — sin reloj de pared; avanza evento a evento, opcionalmente hasta el colapso: ⏳
+```json
+{
+  "dataSource":       "DB",
+  "solverTimingMode": "EVENT_DRIVEN",
+  "optimizerMode":    "ALNS_ONLY",
+  "simStart":         "2026-01-02T00:00:00Z",
+  "simEnd":           "2026-01-07T00:00:00Z",
+  "stopAtCollapse":   true
 }
 ```
 
@@ -285,21 +297,25 @@ Todos los campos son obligatorios. No hay valores por defecto.
 | `optimizerMode` | `ALNS_ONLY` \| `GENETIC_ONLY` \| `ALNS_ACTIVE_GENETIC_EVAL` \| `GENETIC_ACTIVE_ALNS_EVAL` | siempre |
 | `simStart` | ISO-8601 UTC | solo DB |
 | `simEnd` | ISO-8601 UTC | solo DB |
-| `speedFactor` | número > 0 | solo DB |
+| `speedFactor` | número > 0 | solo DB + REAL_TIME (ignorado en EVENT_DRIVEN) |
+| `stopAtCollapse` | `true` \| `false` | opcional, default `false` |
 
 > Si se solicita una combinación no implementada, el servidor devuelve `501 Not Implemented` con el mensaje de error.  
-> Implementado: `DB + REAL_TIME + ALNS_ONLY`.
+> Implementado: `DB + REAL_TIME + ALNS_ONLY` · `DB + EVENT_DRIVEN + ALNS_ONLY`
 
 Response `201`:
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "starting",
-  "simTime": "2026-01-02T00:00:00Z",
-  "simStart": "2026-01-02T00:00:00Z",
-  "simEnd": "2026-01-07T00:00:00Z"
+  "id":              "550e8400-e29b-41d4-a716-446655440000",
+  "status":          "starting",
+  "simTime":         "2026-01-02T00:00:00Z",
+  "simStart":        "2026-01-02T00:00:00Z",
+  "simEnd":          "2026-01-07T00:00:00Z",
+  "collapseSimTime": null
 }
 ```
+
+`collapseSimTime` — instante de tiempo simulado en que se detectó el colapso (primer ALNS con `score > 0`). `null` si no hubo colapso o la simulación sigue corriendo.
 
 `status`: `starting` | `running` | `paused` | `completed` | `stopped`  
 Errores: `400` campo faltante o inválido · `409` el usuario ya tiene una sesión activa · `501` combinación no implementada
@@ -336,7 +352,9 @@ Response `204`. Errores: `409` no está en `paused`
 
 ### POST /simulations/:id/stop — ✅
 
-Detiene hilos y libera recursos. No reversible.
+Detiene hilos y elimina la sesión del registry. No reversible.
+
+Una sesión `completed` (terminó sola) **permanece** en el registry hasta que se llame a este endpoint — así se puede consultar el reporte y `collapseSimTime` después de que termine.
 
 Response `204`
 

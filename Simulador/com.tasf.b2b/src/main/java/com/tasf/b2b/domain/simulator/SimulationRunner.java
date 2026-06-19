@@ -5,8 +5,13 @@ import com.tasf.b2b.domain.model.graph.componentsgraph.FlightEdge;
 import com.tasf.b2b.domain.model.graph.componentsgraph.STEdge;
 import com.tasf.b2b.domain.model.graph.movable.Baggage;
 import com.tasf.b2b.domain.model.graph.movable.Shipment;
+import com.tasf.b2b.domain.optimizer.RoutingOptimizer;
+import com.tasf.b2b.domain.optimizer.SolutionResult;
+import com.tasf.b2b.domain.optimizer.alns.AlnsProjectionBuilder;
+import com.tasf.b2b.domain.model.graph.immovable.ShipmentDataDTO;
 import com.tasf.b2b.domain.simulator.dto.*;
 import com.tasf.b2b.domain.simulator.event.*;
+import com.tasf.b2b.domain.simulator.feed.ShipmentFeed;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -29,12 +34,20 @@ import java.util.concurrent.DelayQueue;
  */
 public class SimulationRunner implements Runnable {
 
-    private final DelayQueue<SimEvent> eventQueue;
-    private final SimulationClock      clock;
-    private final SpaceTimeGraph       graph;
-    private final SimulationConfig     config;
-    private final Instant              simEnd;
-    private final StatePublisher       publisher;
+    private final DelayQueue<SimEvent>   eventQueue;
+    private final PriorityQueue<SimEvent> instantQueue; // EVENT_DRIVEN: orden por simTime, single-thread
+    private final SimulationClock        clock;
+    private final SpaceTimeGraph         graph;
+    private final SimulationConfig       config;
+    private final Instant                simEnd;
+    private final StatePublisher         publisher;
+
+    private RoutingOptimizer inlineOptimizer;         // EVENT_DRIVEN: ALNS corre síncrono entre eventos
+    private ShipmentFeed     shipmentFeed;            // EVENT_DRIVEN: feed lazy; se consume conforme avanza simTime
+    private ShipmentDataDTO  bufferedShipment;        // EVENT_DRIVEN: lookahead de un elemento del feed
+    private volatile Instant currentEventSimTime;     // EVENT_DRIVEN: último instante procesado (para queries)
+    private Instant collapseSimTime;                  // EVENT_DRIVEN: instante en que el ALNS detectó primer retraso
+    private boolean pendingChanged = false;           // EVENT_DRIVEN: activa el ALNS solo cuando llegan nuevos pendientes
 
     //TODO: deliveredBaggages luego no servirá — se guardará un histórico en PostgreSQL
     private final List<Baggage> deliveredBaggages;
@@ -54,8 +67,19 @@ public class SimulationRunner implements Runnable {
         this.clock             = new SimulationClock(config.simStart(), config.speedFactor());
         this.simEnd            = config.simEnd();
         this.eventQueue        = new DelayQueue<>();
+        this.instantQueue      = new PriorityQueue<>(Comparator.comparing(SimEvent::getSimTime));
         this.deliveredBaggages = new ArrayList<>();
         this.running           = false;
+    }
+
+    /** Solo EVENT_DRIVEN: instala el optimizador que corre síncrono entre eventos. */
+    public void setInlineOptimizer(RoutingOptimizer optimizer) {
+        this.inlineOptimizer = optimizer;
+    }
+
+    /** Solo EVENT_DRIVEN: registra el feed de envíos para carga lazy. */
+    public void setShipmentFeed(ShipmentFeed feed) {
+        this.shipmentFeed = feed;
     }
 
     /**
@@ -69,9 +93,13 @@ public class SimulationRunner implements Runnable {
         submit(new SimulationEndEvent(simEnd, clock));
     }
 
-    /** Inyecta un evento desde cualquier hilo. Thread-safe. */
+    /** Inyecta un evento. Thread-safe para REAL_TIME; en EVENT_DRIVEN solo llamar desde el hilo del runner. */
     public void submit(SimEvent event) {
-        eventQueue.put(event);
+        if (config.solverTimingMode() == SimulationConfig.SolverTimingMode.EVENT_DRIVEN) {
+            instantQueue.add(event);
+        } else {
+            eventQueue.put(event);
+        }
     }
 
     /** Pausa el reloj: los eventos dejan de dispararse hasta resume(). Thread-safe. */
@@ -82,6 +110,14 @@ public class SimulationRunner implements Runnable {
 
     @Override
     public void run() {
+        if (config.solverTimingMode() == SimulationConfig.SolverTimingMode.EVENT_DRIVEN) {
+            runEventDriven();
+        } else {
+            runRealTime();
+        }
+    }
+
+    private void runRealTime() {
         while (running) {
             try {
                 SimEvent event = eventQueue.take();
@@ -90,6 +126,100 @@ public class SimulationRunner implements Runnable {
                 Thread.currentThread().interrupt();
                 running = false;
             }
+        }
+    }
+
+    /**
+     * Bucle sin reloj de pared: procesa todos los eventos en orden de simTime,
+     * saltando de evento en evento sin esperar. El ALNS corre síncrono entre lotes.
+     * No requiere hilos adicionales; todo ocurre en el hilo del runner.
+     */
+    private void runEventDriven() {
+        while (running) {
+            if (instantQueue.isEmpty()) break;
+
+            Instant t = instantQueue.peek().getSimTime();
+            currentEventSimTime = t;
+
+            // Procesar lote: todos los eventos con el mismo instante t
+            while (!instantQueue.isEmpty() && instantQueue.peek().getSimTime().equals(t)) {
+                process(instantQueue.poll());
+            }
+            if (!running) break;
+
+            // Inyectar envíos DESPUÉS del lote para que HorizonExpandEvent (mismo t)
+            // siempre expanda el grafo antes de que los shipments lleguen al ALNS.
+            injectShipmentsUpTo(t);
+
+            if (inlineOptimizer != null && pendingChanged && !graph.getPendingBaggages().isEmpty()) {
+                pendingChanged = false;
+                SolutionResult result = inlineOptimizer.optimize(
+                        AlnsProjectionBuilder.build(graph, t,
+                                config.minConnectionMinutes(), config.pickupMinutes()));
+                applyRoutesEventDriven(result, t);
+            }
+        }
+        running = false;
+    }
+
+    /**
+     * Drena del feed todos los envíos con entryDateTime <= upTo y los inserta
+     * en instantQueue. El PriorityQueue los ordena y el siguiente lote los procesa.
+     * Usa un buffer de un elemento para no consumir de más.
+     */
+    private void injectShipmentsUpTo(Instant upTo) {
+        if (shipmentFeed == null) return;
+        while (true) {
+            if (bufferedShipment == null) {
+                bufferedShipment = shipmentFeed.next();
+            }
+            if (bufferedShipment == null) {
+                shipmentFeed = null; // feed agotado
+                break;
+            }
+            if (bufferedShipment.getEntryDateTimeUtc().isAfter(upTo)) break;
+            instantQueue.add(new NewShipmentEvent(bufferedShipment.getEntryDateTimeUtc(), bufferedShipment, clock));
+            bufferedShipment = null;
+        }
+    }
+
+    private void applyRoutesEventDriven(SolutionResult result, Instant simNow) {
+        solutionCount++;
+        int proposed = result.routes().size();
+        int applied  = 0;
+
+        for (Map.Entry<Baggage, List<STEdge>> entry : result.routes().entrySet()) {
+            Baggage      baggage = entry.getKey();
+            List<STEdge> route   = entry.getValue();
+            if (route.isEmpty()) continue;
+
+            if (!baggage.isUnassigned()) {
+                graph.unassignBaggage(baggage);
+            }
+            baggage.clearExpectedRoute();
+            for (STEdge edge : route) {
+                baggage.appendExpectedEdge(edge);
+            }
+            graph.assignBaggage(baggage);
+            applied++;
+
+            List<String> flightIds = route.stream()
+                    .filter(e -> e instanceof FlightEdge)
+                    .map(e -> ((FlightEdge) e).getIdFlightEdge())
+                    .toList();
+            publisher.publish(new BaggageAssignedDTO(simNow, baggage.getId(), flightIds));
+        }
+
+        totalProposed += proposed;
+        totalApplied  += applied;
+        log(String.format("ALNS #%d (ED) | propuestas: %d | aplicadas: %d | sin-ruta: %d | score: %.1f",
+                solutionCount, proposed, applied, result.unroutedCount(), result.alnsScore()));
+
+        if (config.stopAtCollapse() && result.alnsScore() > 0) {
+            collapseSimTime = simNow;
+            log(String.format("[COLLAPSE] score=%.2f | sin-ruta=%d | deteniendo simulación",
+                    result.alnsScore(), result.unroutedCount()));
+            running = false;
         }
     }
 
@@ -194,6 +324,7 @@ public class SimulationRunner implements Runnable {
                 if (waitEdge != null) waitEdge.assign();
                 if (baggage.getExpectedRoute().isEmpty()) {
                     graph.unassignBaggage(baggage);
+                    pendingChanged = true;
                     publisher.publish(new BaggagePendingDTO(
                             clock.now(),
                             baggage.getId(),
@@ -238,6 +369,7 @@ public class SimulationRunner implements Runnable {
 
         for (Baggage baggage : graph.getBaggagesAffectedBy(e.getFlightScheduleKey(), e.getDepTimeUtc())) {
             graph.unassignBaggage(baggage);
+            pendingChanged = true;
             publisher.publish(new BaggagePendingDTO(
                     clock.now(),
                     baggage.getId(),
@@ -250,6 +382,7 @@ public class SimulationRunner implements Runnable {
     private void handleNewShipment(NewShipmentEvent e) {
         Shipment shipment = new Shipment(e.getShipmentData());
         graph.addShipment(shipment);
+        pendingChanged = true;
         log("Nuevo shipment: " + e.getShipmentData().getId()
                 + " (" + graph.getPendingBaggages().size() + " maletas pendientes)");
 
@@ -310,6 +443,13 @@ public class SimulationRunner implements Runnable {
                 solutionCount, proposed,
                 stale, proposed > 0 ? 100.0 * stale / proposed : 0.0,
                 applied, e.getUnroutedCount(), e.getAlnsScore()));
+
+        if (config.stopAtCollapse() && e.getAlnsScore() > 0) {
+            collapseSimTime = clock.now();
+            log(String.format("[COLLAPSE] score=%.2f | sin-ruta=%d | deteniendo simulación",
+                    e.getAlnsScore(), e.getUnroutedCount()));
+            running = false;
+        }
     }
 
     private void log(String msg) {
@@ -332,6 +472,20 @@ public class SimulationRunner implements Runnable {
         return Collections.unmodifiableList(deliveredBaggages);
     }
 
+    /**
+     * Tiempo simulado actual, correcto para ambos modos:
+     * - REAL_TIME → clock.now() (derivado del reloj de pared)
+     * - EVENT_DRIVEN → el instante del último evento procesado
+     */
+    public Instant simNow() {
+        if (config.solverTimingMode() == SimulationConfig.SolverTimingMode.EVENT_DRIVEN
+                && currentEventSimTime != null) {
+            return currentEventSimTime;
+        }
+        return clock.now();
+    }
+
+    public Instant           getCollapseSimTime() { return collapseSimTime; }
     public SimulationClock   getClock()  { return clock; }
     public SpaceTimeGraph    getGraph()  { return graph; }
     public SimulationConfig  getConfig() { return config; }

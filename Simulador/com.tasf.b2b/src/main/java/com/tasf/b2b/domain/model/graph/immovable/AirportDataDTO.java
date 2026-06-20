@@ -18,7 +18,11 @@ public class AirportDataDTO {
     private final String continent;
     private final String short_name; //bogo
     private final int    gmtOffset; //-5
-    private final int    capacity; // 430
+    // Mutable: la capacidad de almacén es editable desde el gestor de aeropuertos.
+    // volatile para visibilidad entre el hilo HTTP que la edita y los que la leen
+    // (snapshot/dashboard). El cambio se refleja en vivo porque el grafo comparte
+    // esta misma instancia de AirportDataDTO.
+    private volatile int capacity; // 430
     private final double latitude; // 04° 42' 05" N
     private final double longitude; // 74° 08' 49" W
 
@@ -63,6 +67,11 @@ public class AirportDataDTO {
 
     public int getCapacity() {
         return capacity;
+    }
+
+    /** Actualiza la capacidad de almacén (gestor de aeropuertos). Debe ser > 0. */
+    public void setCapacity(int capacity) {
+        this.capacity = capacity;
     }
 
     public double getLatitude() {

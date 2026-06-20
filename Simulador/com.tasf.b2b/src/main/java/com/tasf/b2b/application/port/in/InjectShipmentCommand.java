@@ -8,13 +8,19 @@ package com.tasf.b2b.application.port.in;
  * el envío entra al motor con {@code entryDateTimeUtc = ahora} y el optimizador (ALNS)
  * lo enruta de inmediato a vuelos que tengan almacenamiento (capacidad) disponible.</p>
  *
- * @param originIcao ICAO del aeropuerto de origen (almacén desde el que sale la orden)
- * @param destIcao   ICAO del aeropuerto de destino
- * @param quantity   cantidad de maletas (cada unidad se convierte en un baggage)
- * @param clientId   identificador del cliente/operario (informativo)
+ * @param originIcao       ICAO de origen solicitado. Se usa solo si el operario no
+ *                         corresponde a una ciudad (p. ej. el usuario {@code admin});
+ *                         para un operario de ciudad, el origen se IMPONE desde su sede.
+ * @param destIcao         ICAO del aeropuerto de destino
+ * @param quantity         cantidad de maletas (cada unidad se convierte en un baggage)
+ * @param clientId         identificador del cliente/operario (informativo)
+ * @param operatorUsername username del operario logueado. Si coincide con el nombre de
+ *                         una ciudad de la red, esa ciudad es el origen de la orden
+ *                         (cada usuario es el operador de su ciudad).
  */
 public record InjectShipmentCommand(
         String originIcao,
         String destIcao,
         int    quantity,
-        String clientId) {}
+        String clientId,
+        String operatorUsername) {}

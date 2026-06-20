@@ -385,12 +385,23 @@ public class RunSimulationUseCase implements SimulationControlPort {
     public InjectShipmentResult injectShipment(String sessionId, InjectShipmentCommand cmd) {
         SimulationSession session = registry.findOrThrow(sessionId);
 
-        AirportDataDTO origin = airports.get(cmd.originIcao());
-        AirportDataDTO dest   = airports.get(cmd.destIcao());
+        // Cada usuario es el operador de su ciudad: si el username del operario coincide
+        // con el nombre de una ciudad de la red, ESA es la sede de origen (se impone,
+        // ignorando lo que envíe el cliente). Si no (p. ej. el usuario admin), se usa el
+        // originIcao solicitado.
+        AirportDataDTO origin = findAirportByCity(cmd.operatorUsername());
+        if (origin == null && cmd.originIcao() != null) {
+            origin = airports.get(cmd.originIcao());
+        }
+        AirportDataDTO dest = airports.get(cmd.destIcao());
         if (origin == null)
-            throw new IllegalArgumentException("Aeropuerto de origen no registrado: " + cmd.originIcao());
+            throw new IllegalArgumentException(
+                    "No se pudo determinar el aeropuerto de origen para el operador '"
+                    + cmd.operatorUsername() + "'");
         if (dest == null)
             throw new IllegalArgumentException("Aeropuerto de destino no registrado: " + cmd.destIcao());
+        if (origin.getIcao().equals(dest.getIcao()))
+            throw new IllegalArgumentException("El aeropuerto de origen y el de destino no pueden ser el mismo");
 
         SimulationRunner runner = session.getRunner();
         SimulationClock  clock  = runner.getClock();
@@ -424,6 +435,28 @@ public class RunSimulationUseCase implements SimulationControlPort {
      */
     private String nextManualShipmentId(Instant now) {
         return String.format("MAN-%s-%04d", MANUAL_ID_FMT.format(now), manualShipmentSeq.incrementAndGet());
+    }
+
+    /**
+     * Busca el aeropuerto cuya ciudad coincide (sin distinguir mayúsculas) con el
+     * nombre dado — usado para mapear el username del operario a su sede de origen.
+     * Devuelve null si no hay coincidencia (p. ej. el usuario admin).
+     */
+    private AirportDataDTO findAirportByCity(String city) {
+        if (city == null || city.isBlank()) return null;
+        String target = normalizeCity(city);
+        for (AirportDataDTO a : airports.values()) {
+            if (a.getCity() != null && normalizeCity(a.getCity()).equals(target)) return a;
+        }
+        return null;
+    }
+
+    /** Normaliza para comparar ciudades: sin acentos, sin espacios extremos, minúsculas. */
+    private static String normalizeCity(String s) {
+        return java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "")
+                .trim()
+                .toLowerCase();
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

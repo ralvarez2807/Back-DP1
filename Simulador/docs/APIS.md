@@ -30,6 +30,7 @@ Base URL: `http://localhost:8080/api/v1`
 | ⏳ | DELETE | `/admin/historical` | borra todo el histórico |
 | ✅ | GET | `/data/available-days` | |
 | ✅ | GET | `/data/airports` | referencia estática, sin carga en tiempo real |
+| ✅ | PUT | `/data/airports/:icao/capacity` | modifica la capacidad de almacén (no se crean ni eliminan aeropuertos) |
 | ✅ | GET | `/data/routes` | |
 | ✅ | POST | `/simulations` | crea e inicia sesión; 409 si el usuario ya tiene una activa |
 | ✅ | GET | `/simulations/mine` | sesión activa del usuario autenticado |
@@ -52,7 +53,7 @@ Base URL: `http://localhost:8080/api/v1`
 | ✅ | GET | `/simulations/:id/baggage/:baggageId/route` | ruta completa de una maleta |
 | ✅ | GET | `/simulations/:id/reports/summary` | resumen de simulación |
 | ✅ | GET | `/operations` | sesión "Operación Día a Día" en vivo (la crea si no existe) |
-| ✅ | POST | `/operations/orders` | carga manual de una orden de maletas (origen, destino, cantidad) |
+| ✅ | POST | `/operations/orders` | carga manual de una orden de maletas (destino + cantidad; origen = ciudad del operario) |
 
 ---
 
@@ -236,8 +237,27 @@ Referencia estática (sin load en tiempo real). Para carga en vivo usar `/simula
 
 Response `200`:
 ```json
-[ { "icao": "SKBO", "city": "Bogota", "continent": "SOUTH_AMERICA", "lat": 4.701, "lon": -74.147, "capacity": 50 } ]
+[ { "icao": "SKBO", "city": "Bogota", "country": "Colombia", "continent": "America del Sur",
+   "shortName": "bogo", "gmtOffset": -5, "capacity": 430, "lat": 4.701, "lon": -74.147 } ]
 ```
+
+---
+
+### PUT /data/airports/:icao/capacity — ✅
+
+Modifica la **capacidad de almacén** de un aeropuerto existente. La red de aeropuertos
+es fija: no hay endpoints para crear ni eliminar aeropuertos. El cambio se persiste en BD
+y se refleja **en vivo** (mismas instancias en memoria que comparten todas las sesiones,
+incluida la Operación Día a Día).
+
+Request:
+```json
+{ "capacity": 520 }
+```
+
+Response `200`: el aeropuerto actualizado (mismo shape que `GET /data/airports`).
+
+Errores: `400` (`capacity` ausente o `<= 0`), `404` (ICAO no existe).
 
 ---
 
@@ -422,22 +442,27 @@ operario en vivo: la **hora de la orden es el momento de envío** (`entryTime = 
 el optimizador (ALNS) la enruta de inmediato a vuelos con almacenamiento (capacidad)
 disponible. Crea la sesión día-a-día si aún no estaba corriendo.
 
-Request:
+**Origen según el operario:** cada usuario es el operador de su ciudad. Si el `username`
+del usuario logueado coincide (sin distinguir acentos/mayúsculas) con el nombre de una
+ciudad de la red, esa ciudad se **impone** como origen (se ignora el `originIcao` que
+envíe). Para un usuario que no sea ciudad (p. ej. `admin`) se usa el `originIcao` del body.
+
+Request (operario de ciudad — el origen se deriva del login):
 ```json
-{
-  "originIcao": "SPIM",
-  "destIcao":   "EBCI",
-  "quantity":   25,
-  "clientId":   "OP-LIMA"
-}
+{ "destIcao": "EBCI", "quantity": 25 }
+```
+
+Request (admin — envía el origen explícitamente):
+```json
+{ "originIcao": "SPIM", "destIcao": "EBCI", "quantity": 25 }
 ```
 
 | Campo | Req. | Descripción |
 |-------|------|-------------|
-| `originIcao` | sí | ICAO del aeropuerto de origen (almacén desde el que sale la orden) |
+| `originIcao` | no | ICAO de origen. Solo se usa para admin/usuario sin ciudad; para un operario de ciudad se impone su sede. |
 | `destIcao`   | sí | ICAO del aeropuerto de destino (distinto del origen) |
 | `quantity`   | sí | cantidad de maletas, entero `> 0` |
-| `clientId`   | no | identificador del cliente/operario; por defecto el usuario autenticado |
+| `clientId`   | no | identificador del cliente; por defecto el usuario autenticado |
 
 Response `201`:
 ```json
@@ -451,9 +476,9 @@ Response `201`:
 }
 ```
 
-Errores: `400` (origen/destino faltante, origen = destino, o `quantity <= 0`),
-`404` (ICAO no registrado en la red). El nuevo envío aparece de inmediato en el stream
-WS (`SHIPMENT_CREATED`) y, en el siguiente `snapshot`, en la carga del aeropuerto origen.
+Errores: `400` (`destIcao` faltante o `quantity <= 0`), `404` (ICAO de destino no
+registrado, o no se pudo determinar el origen). El nuevo envío aparece de inmediato en el
+stream WS (`SHIPMENT_CREATED`) y, en el siguiente `snapshot`, en la carga del origen.
 
 ---
 

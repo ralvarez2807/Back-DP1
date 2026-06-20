@@ -95,26 +95,25 @@ public class OperationsController {
     @PostMapping("/orders")
     @ResponseStatus(HttpStatus.CREATED)
     public CreateOrderResponse createOrder(@RequestBody CreateOrderRequest req, Principal principal) {
-        if (req.originIcao() == null || req.originIcao().isBlank())
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido: originIcao");
         if (req.destIcao() == null || req.destIcao().isBlank())
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido: destIcao");
         if (req.quantity() == null || req.quantity() <= 0)
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "quantity debe ser un entero mayor que 0");
 
-        String originIcao = req.originIcao().trim().toUpperCase();
+        // El origen es opcional en el body: para un operario de ciudad se IMPONE su sede
+        // a partir del usuario logueado; el admin/usuario sin ciudad sí lo envía.
         String destIcao   = req.destIcao().trim().toUpperCase();
-        if (originIcao.equals(destIcao))
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "El aeropuerto de origen y el de destino no pueden ser el mismo");
+        String originIcao  = (req.originIcao() != null && !req.originIcao().isBlank())
+                ? req.originIcao().trim().toUpperCase() : null;
+        String username    = principal != null ? principal.getName() : null;
+        String clientId    = (req.clientId() != null && !req.clientId().isBlank())
+                ? req.clientId() : (username != null ? username : "OPERARIO");
 
-        SimulationSession session  = dailyOps.ensureRunning();
-        String            clientId = (req.clientId() != null && !req.clientId().isBlank())
-                ? req.clientId() : (principal != null ? principal.getName() : "OPERARIO");
+        SimulationSession session = dailyOps.ensureRunning();
 
         InjectShipmentResult result = controlPort.injectShipment(
                 session.getId(),
-                new InjectShipmentCommand(originIcao, destIcao, req.quantity(), clientId));
+                new InjectShipmentCommand(originIcao, destIcao, req.quantity(), clientId, username));
 
         return new CreateOrderResponse(
                 result.shipmentId(), result.baggageIds(), result.originIcao(),

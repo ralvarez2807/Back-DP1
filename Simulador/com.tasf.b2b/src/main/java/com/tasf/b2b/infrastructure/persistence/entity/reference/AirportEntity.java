@@ -58,4 +58,7 @@ public class AirportEntity {
     public int    getCapacity()  { return capacity; }
     public double getLatitude()  { return latitude; }
     public double getLongitude() { return longitude; }
+
+    /** Editable desde el gestor de aeropuertos (modificación de capacidad de almacén). */
+    public void setCapacity(int capacity) { this.capacity = capacity; }
 }

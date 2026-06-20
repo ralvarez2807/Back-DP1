@@ -57,4 +57,14 @@ public interface SimulationControlPort {
      * @throws IllegalArgumentException si la sesión no existe
      */
     List<String> injectDisruption(String sessionId, DisruptionCommand command);
+
+    /**
+     * Inyecta un envío manual (carga de maletas por un operario) sobre una sesión en
+     * curso. El envío entra con {@code entryDateTimeUtc = ahora} y el optimizador lo
+     * enruta de inmediato a vuelos con almacenamiento disponible.
+     *
+     * @return datos del envío creado (id, ids de maletas, origen/destino, cantidad, hora).
+     * @throws IllegalArgumentException si la sesión o alguno de los aeropuertos no existe
+     */
+    InjectShipmentResult injectShipment(String sessionId, InjectShipmentCommand command);
 }

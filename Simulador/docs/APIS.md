@@ -51,6 +51,8 @@ Base URL: `http://localhost:8080/api/v1`
 | ✅ | GET | `/simulations/:id/baggage/:baggageId` | tracking de una maleta |
 | ✅ | GET | `/simulations/:id/baggage/:baggageId/route` | ruta completa de una maleta |
 | ✅ | GET | `/simulations/:id/reports/summary` | resumen de simulación |
+| ✅ | GET | `/operations` | sesión "Operación Día a Día" en vivo (la crea si no existe) |
+| ✅ | POST | `/operations/orders` | carga manual de una orden de maletas (origen, destino, cantidad) |
 
 ---
 
@@ -363,6 +365,95 @@ Response `200`:
 ```json
 { "affectedFlights": 1, "flightIds": ["SKBO-SEQM-19:00-20260103"] }
 ```
+
+---
+
+## 6.5. Operación Día a Día
+
+Vista operativa **en vivo** anclada a la fecha y hora reales de hoy, que refleja los
+planes de vuelo recurrentes del día. A diferencia de una simulación manual:
+
+- Es **un singleton de servidor**, compartido por todos los clientes (no una sesión por usuario).
+- Corre en su **propio hilo** desde el arranque (auto-start en `ApplicationReadyEvent`), bajo el usuario sintético `__daily_ops__`.
+- Usa `REAL_TIME + ALNS_ONLY` con `simStart = ahora` y `speedFactor = 1.0` (tiempo real estricto).
+- **No consume datos simulados**: a diferencia de una simulación manual, arranca **sin envíos ni cancelaciones** del feed (BD/archivo). Los aeropuertos parten **vacíos** y solo se llenan con órdenes **reales** que carga el operario (`POST /operations/orders`) y con circunstancias reales (`injectDisruption`). La red de vuelos recurrentes sí se carga (es la infraestructura, no datos de operación).
+
+Internamente **reutiliza el motor de simulación**: la sesión vive en el mismo registry, por lo
+que sus datos se consultan con los endpoints `/simulations/{id}/...` ya existentes
+(snapshot, dashboard, flights, airports, WebSocket). El único endpoint nuevo entrega su `id`.
+
+**Config** (`application.yml` → `app.daily-ops`):
+
+| Propiedad | Env var | Default | Descripción |
+|-----------|---------|---------|-------------|
+| `speed-factor` | `DAILY_OPS_SPEED_FACTOR` | `1.0` | 1.0 = tiempo real; subir para ver más movimiento |
+| `horizon-days` | `DAILY_OPS_HORIZON_DAYS` | `14` | fin de la corrida (rolling horizon acota la memoria) |
+
+### GET /operations — ✅
+
+Devuelve (creando/relanzando si hace falta) la sesión día-a-día. Idempotente y auto-reparable.
+
+Response `200`:
+```json
+{
+  "id":          "08845795-11c7-44e4-b486-c2cbdeba85a9",
+  "status":      "running",
+  "simTime":     "2026-06-18T22:25:00Z",
+  "simStart":    "2026-06-18T22:22:00Z",
+  "simEnd":      "2026-07-02T22:22:00Z",
+  "speedFactor": 1.0
+}
+```
+
+Flujo del frontend:
+1. `GET /operations` → obtiene `id` y `speedFactor`.
+2. `GET /simulations/{id}/snapshot` → estado completo (vuelos en aire = status `DEPARTED`, aeropuertos con carga).
+3. `GET /simulations/{id}/dashboard` → métricas (polling).
+4. WS `/simulations/{id}/ws` → stream de eventos en vivo.
+
+> `status`: `starting | running | paused | completed | stopped`. La sesión es permanente;
+> si alguna vez termina (alcanza su horizonte) el siguiente `GET /operations` la relanza.
+
+### POST /operations/orders — ✅
+
+Carga manual de una **orden de maletas** sobre la Operación Día a Día. A diferencia de
+los envíos del archivo/BD que alimentan la simulación, estas órdenes las registra un
+operario en vivo: la **hora de la orden es el momento de envío** (`entryTime = ahora`) y
+el optimizador (ALNS) la enruta de inmediato a vuelos con almacenamiento (capacidad)
+disponible. Crea la sesión día-a-día si aún no estaba corriendo.
+
+Request:
+```json
+{
+  "originIcao": "SPIM",
+  "destIcao":   "EBCI",
+  "quantity":   25,
+  "clientId":   "OP-LIMA"
+}
+```
+
+| Campo | Req. | Descripción |
+|-------|------|-------------|
+| `originIcao` | sí | ICAO del aeropuerto de origen (almacén desde el que sale la orden) |
+| `destIcao`   | sí | ICAO del aeropuerto de destino (distinto del origen) |
+| `quantity`   | sí | cantidad de maletas, entero `> 0` |
+| `clientId`   | no | identificador del cliente/operario; por defecto el usuario autenticado |
+
+Response `201`:
+```json
+{
+  "shipmentId": "MAN-20260620-0001",
+  "baggageIds": ["MAN-20260620-0001-B1", "MAN-20260620-0001-B2"],
+  "originIcao": "SPIM",
+  "destIcao":   "EBCI",
+  "quantity":   25,
+  "entryTime":  "2026-06-20T06:59:00Z"
+}
+```
+
+Errores: `400` (origen/destino faltante, origen = destino, o `quantity <= 0`),
+`404` (ICAO no registrado en la red). El nuevo envío aparece de inmediato en el stream
+WS (`SHIPMENT_CREATED`) y, en el siguiente `snapshot`, en la carga del aeropuerto origen.
 
 ---
 

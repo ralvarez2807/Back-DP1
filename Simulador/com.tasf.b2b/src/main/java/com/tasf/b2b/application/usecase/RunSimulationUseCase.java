@@ -1,13 +1,18 @@
 package com.tasf.b2b.application.usecase;
 
 import com.tasf.b2b.application.port.in.DisruptionCommand;
+import com.tasf.b2b.application.port.in.InjectShipmentCommand;
+import com.tasf.b2b.application.port.in.InjectShipmentResult;
 import com.tasf.b2b.application.port.in.SimulationControlPort;
 import com.tasf.b2b.application.port.in.StartSimulationCommand;
 import com.tasf.b2b.domain.model.graph.SpaceTimeGraph;
 import com.tasf.b2b.domain.model.graph.componentsgraph.FlightEdge;
 import com.tasf.b2b.domain.model.graph.immovable.AirportDataDTO;
+import com.tasf.b2b.domain.model.graph.immovable.DeliveryTypeValues;
 import com.tasf.b2b.domain.model.graph.immovable.FlightScheduleDataDTO;
+import com.tasf.b2b.domain.model.graph.immovable.ShipmentDataDTO;
 import com.tasf.b2b.domain.simulator.event.FlightCancelledEvent;
+import com.tasf.b2b.domain.simulator.event.NewShipmentEvent;
 import com.tasf.b2b.domain.optimizer.alns.ALNSAlgorithm;
 import com.tasf.b2b.domain.optimizer.genetic.GeneticAlgorithm;
 import com.tasf.b2b.domain.simulator.SimulationClock;
@@ -20,10 +25,13 @@ import com.tasf.b2b.domain.simulator.feed.ShipmentFeed;
 import com.tasf.b2b.domain.simulator.thread.*;
 
 import java.time.Instant;
+import java.time.format.DateTimeFormatter;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
@@ -60,8 +68,19 @@ public class RunSimulationUseCase implements SimulationControlPort {
     private final Function<String, StatePublisher> publisherFactory;
     private final Map<String, AirportDataDTO>      airports;
     private final List<FlightScheduleDataDTO>      flights;
+    private final DeliveryTypeValues               deliveryTypes;
     private final BiFunction<Instant, Instant, ShipmentFeed>     shipmentFeedFactory;
     private final BiFunction<Instant, Instant, CancellationFeed> cancellationFeedFactory;
+
+    /** Secuencia para los ids de envíos cargados manualmente (operario). */
+    private final AtomicLong manualShipmentSeq = new AtomicLong(0);
+
+    private static final DateTimeFormatter MANUAL_ID_FMT =
+            DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC);
+
+    /** Feeds vacíos para la Operación Día a Día: sin envíos ni cancelaciones simulados. */
+    private static final ShipmentFeed     EMPTY_SHIPMENT_FEED     = () -> null;
+    private static final CancellationFeed EMPTY_CANCELLATION_FEED = () -> null;
 
     /**
      * @param registry                registro compartido de sesiones activas
@@ -77,12 +96,14 @@ public class RunSimulationUseCase implements SimulationControlPort {
     public RunSimulationUseCase(SimulationRegistry registry,
                                 Map<String, AirportDataDTO> airports,
                                 List<FlightScheduleDataDTO> flights,
+                                DeliveryTypeValues deliveryTypes,
                                 BiFunction<Instant, Instant, ShipmentFeed> shipmentFeedFactory,
                                 BiFunction<Instant, Instant, CancellationFeed> cancellationFeedFactory,
                                 Function<String, StatePublisher> publisherFactory) {
         this.registry                = registry;
         this.airports                = airports;
         this.flights                 = flights;
+        this.deliveryTypes           = deliveryTypes;
         this.shipmentFeedFactory     = shipmentFeedFactory;
         this.cancellationFeedFactory = cancellationFeedFactory;
         this.publisherFactory        = publisherFactory;
@@ -103,6 +124,20 @@ public class RunSimulationUseCase implements SimulationControlPort {
      */
     @Override
     public String start(StartSimulationCommand cmd) {
+        // Simulación manual de usuario: consume los datos simulados (BD/archivo).
+        return startSession(cmd, true);
+    }
+
+    /**
+     * Núcleo de arranque compartido por la simulación manual y la Operación Día a Día.
+     *
+     * @param useSimulatedFeeds {@code true} → inyecta envíos y cancelaciones simulados
+     *        (BD/archivo); {@code false} → arranca sin datos simulados (solo la red de
+     *        vuelos), de modo que las órdenes provienen únicamente de cargas reales
+     *        (manuales o por archivo) vía {@link #injectShipment} y las circunstancias
+     *        vía {@link #injectDisruption}. Es lo que usa la Operación Día a Día.
+     */
+    private String startSession(StartSimulationCommand cmd, boolean useSimulatedFeeds) {
         validateCombination(cmd);
 
         if (registry.hasActiveSession(cmd.username()))
@@ -132,9 +167,16 @@ public class RunSimulationUseCase implements SimulationControlPort {
 
         SimulationClock clock = runner.getClock();
 
-        // ── 5. Feeds de datos (acotados al rango simulado) ────────────────────
-        ShipmentFeed     shipmentFeed     = shipmentFeedFactory.apply(simStart, simEnd);
-        CancellationFeed cancellationFeed = cancellationFeedFactory.apply(simStart, simEnd);
+        // ── 5. Feeds de datos ─────────────────────────────────────────────────
+        // La Operación Día a Día (useSimulatedFeeds=false) NO consume envíos ni
+        // cancelaciones simulados: sus aeropuertos arrancan vacíos y solo se llenan
+        // con órdenes reales cargadas por el operario (manual o por archivo).
+        ShipmentFeed     shipmentFeed     = useSimulatedFeeds
+                ? shipmentFeedFactory.apply(simStart, simEnd)
+                : EMPTY_SHIPMENT_FEED;
+        CancellationFeed cancellationFeed = useSimulatedFeeds
+                ? cancellationFeedFactory.apply(simStart, simEnd)
+                : EMPTY_CANCELLATION_FEED;
 
         // ── 6. Sesión ─────────────────────────────────────────────────────────
         SimulationSession session = new SimulationSession(sessionId, cmd.username(), runner, graph, config, publisher);
@@ -221,7 +263,8 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 SimulationConfig.SolverTimingMode.REAL_TIME,
                 SimulationConfig.OptimizerMode.ALNS_ONLY,
                 simStart, simEnd, speedFactor);
-        return start(cmd);
+        // Sin feeds simulados: la operación en vivo solo refleja órdenes reales.
+        return startSession(cmd, false);
     }
 
     // ── validación de combinación ─────────────────────────────────────────────
@@ -327,6 +370,60 @@ public class RunSimulationUseCase implements SimulationControlPort {
         if (from != null && t.isBefore(from)) return false;
         if (to != null && t.isAfter(to)) return false;
         return true;
+    }
+
+    // ── injectShipment (carga manual de órdenes) ───────────────────────────────
+
+    /**
+     * Inyecta un envío manual en una sesión en curso (típicamente la "Operación Día a
+     * Día"). Construye un {@link ShipmentDataDTO} con la hora actual de la sesión como
+     * entrada y lo encola vía {@link NewShipmentEvent} de forma thread-safe. El evento
+     * se dispara de inmediato (su simTime = ahora) y el hilo ALNS, que sondea cada
+     * ~200 ms, enruta las maletas a vuelos con capacidad disponible.
+     */
+    @Override
+    public InjectShipmentResult injectShipment(String sessionId, InjectShipmentCommand cmd) {
+        SimulationSession session = registry.findOrThrow(sessionId);
+
+        AirportDataDTO origin = airports.get(cmd.originIcao());
+        AirportDataDTO dest   = airports.get(cmd.destIcao());
+        if (origin == null)
+            throw new IllegalArgumentException("Aeropuerto de origen no registrado: " + cmd.originIcao());
+        if (dest == null)
+            throw new IllegalArgumentException("Aeropuerto de destino no registrado: " + cmd.destIcao());
+
+        SimulationRunner runner = session.getRunner();
+        SimulationClock  clock  = runner.getClock();
+        Instant          now    = clock.now();
+
+        String clientId = (cmd.clientId() == null || cmd.clientId().isBlank())
+                ? "OPERARIO" : cmd.clientId().trim();
+        String shipmentId = nextManualShipmentId(now);
+
+        ShipmentDataDTO data = new ShipmentDataDTO(
+                shipmentId, now, origin, dest, cmd.quantity(), clientId, deliveryTypes);
+
+        // submit() es thread-safe (DelayQueue). El handler corre en el hilo del runner.
+        runner.submit(new NewShipmentEvent(now, data, clock));
+
+        List<String> baggageIds = new ArrayList<>(cmd.quantity());
+        for (int i = 1; i <= cmd.quantity(); i++) {
+            baggageIds.add(shipmentId + "-B" + i);
+        }
+
+        System.out.printf("[OPS] Orden manual inyectada: %s (%s→%s x%d) en sesión %s%n",
+                shipmentId, origin.getIcao(), dest.getIcao(), cmd.quantity(), sessionId);
+
+        return new InjectShipmentResult(
+                shipmentId, baggageIds, origin.getIcao(), dest.getIcao(), cmd.quantity(), now);
+    }
+
+    /**
+     * Id legible para órdenes manuales: {@code MAN-YYYYMMDD-NNNN}. El prefijo "MAN"
+     * lo distingue de los ids numéricos de los envíos del archivo/BD.
+     */
+    private String nextManualShipmentId(Instant now) {
+        return String.format("MAN-%s-%04d", MANUAL_ID_FMT.format(now), manualShipmentSeq.incrementAndGet());
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

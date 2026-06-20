@@ -53,6 +53,7 @@ public class SpringConfig {
                 registry,
                 airports,
                 flights,
+                deliveryTypes,
                 (from, to) -> new DbSimulationShipmentFeed(shipmentRepo, airports, deliveryTypes, from, to),
                 (from, to) -> new DbSimulationCancellationFeed(cancellationRepo, from, to),
                 InMemoryStatePublisher::new

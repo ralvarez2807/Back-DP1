@@ -1,13 +1,23 @@
 package com.tasf.b2b.presentation.rest;
 
+import com.tasf.b2b.application.port.in.InjectShipmentCommand;
+import com.tasf.b2b.application.port.in.InjectShipmentResult;
+import com.tasf.b2b.application.port.in.SimulationControlPort;
 import com.tasf.b2b.application.usecase.DailyOperationsService;
 import com.tasf.b2b.application.usecase.SimulationSession;
 import com.tasf.b2b.domain.simulator.SimulationClock;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.security.Principal;
 import java.time.Instant;
+import java.util.List;
 
 /**
  * Operación Día a Día — vista operativa en vivo anclada a la fecha real de hoy.
@@ -30,9 +40,12 @@ import java.time.Instant;
 public class OperationsController {
 
     private final DailyOperationsService dailyOps;
+    private final SimulationControlPort  controlPort;
 
-    public OperationsController(DailyOperationsService dailyOps) {
-        this.dailyOps = dailyOps;
+    public OperationsController(DailyOperationsService dailyOps,
+                               SimulationControlPort controlPort) {
+        this.dailyOps    = dailyOps;
+        this.controlPort = controlPort;
     }
 
     /**
@@ -57,5 +70,54 @@ public class OperationsController {
                 session.getConfig().simStart(),
                 session.getConfig().simEnd(),
                 clock.getSpeedFactor());
+    }
+
+    // ── Carga manual de órdenes de maletas ─────────────────────────────────────
+
+    /**
+     * Cuerpo del POST /operations/orders.
+     *
+     * @param originIcao ICAO del aeropuerto de origen (requerido)
+     * @param destIcao   ICAO del aeropuerto de destino (requerido)
+     * @param quantity   cantidad de maletas (> 0)
+     * @param clientId   identificador opcional del cliente/operario
+     */
+    record CreateOrderRequest(String originIcao, String destIcao, Integer quantity, String clientId) {}
+
+    record CreateOrderResponse(String shipmentId, List<String> baggageIds, String originIcao,
+                               String destIcao, int quantity, Instant entryTime) {}
+
+    /**
+     * Registra una orden de maletas en la Operación Día a Día con hora = ahora y la
+     * enruta de inmediato a vuelos con almacenamiento disponible (vía el optimizador).
+     * Crea la sesión día-a-día si aún no estaba corriendo.
+     */
+    @PostMapping("/orders")
+    @ResponseStatus(HttpStatus.CREATED)
+    public CreateOrderResponse createOrder(@RequestBody CreateOrderRequest req, Principal principal) {
+        if (req.originIcao() == null || req.originIcao().isBlank())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido: originIcao");
+        if (req.destIcao() == null || req.destIcao().isBlank())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Campo requerido: destIcao");
+        if (req.quantity() == null || req.quantity() <= 0)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "quantity debe ser un entero mayor que 0");
+
+        String originIcao = req.originIcao().trim().toUpperCase();
+        String destIcao   = req.destIcao().trim().toUpperCase();
+        if (originIcao.equals(destIcao))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "El aeropuerto de origen y el de destino no pueden ser el mismo");
+
+        SimulationSession session  = dailyOps.ensureRunning();
+        String            clientId = (req.clientId() != null && !req.clientId().isBlank())
+                ? req.clientId() : (principal != null ? principal.getName() : "OPERARIO");
+
+        InjectShipmentResult result = controlPort.injectShipment(
+                session.getId(),
+                new InjectShipmentCommand(originIcao, destIcao, req.quantity(), clientId));
+
+        return new CreateOrderResponse(
+                result.shipmentId(), result.baggageIds(), result.originIcao(),
+                result.destIcao(), result.quantity(), result.entryTime());
     }
 }

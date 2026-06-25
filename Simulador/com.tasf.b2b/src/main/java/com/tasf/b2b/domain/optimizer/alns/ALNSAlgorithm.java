@@ -13,6 +13,9 @@ import com.tasf.b2b.domain.optimizer.alns.repair.GreedyInsertion;
 import com.tasf.b2b.domain.optimizer.alns.repair.MinWaitInsertion;
 import com.tasf.b2b.domain.optimizer.alns.repair.RegretInsertion;
 
+import java.time.Instant;
+import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 
@@ -60,6 +63,13 @@ public class ALNSAlgorithm implements RoutingOptimizer {
         RouletteWheelSelector<RepairOperator>  repairSel  = new RouletteWheelSelector<>(repairOps, random);
         AcceptanceCriterion acceptance = new SimulatedAnnealing(INITIAL_TEMP, COOLING_RATE, random);
 
+        Instant horizonMax = projection.flightsByOrigin().values().stream()
+                .flatMap(m -> m.values().stream())
+                .flatMap(Collection::stream)
+                .map(FlightSnapshot::arrTime)
+                .max(Comparator.naturalOrder())
+                .orElseGet(() -> projection.snapshotTime().plusSeconds(14L * 24 * 3600));
+
         BaggageSolution current = GraspInitializer.initialize(projection, random);
         BaggageSolution best    = current.deepCopy();
 
@@ -76,9 +86,9 @@ public class ALNSAlgorithm implements RoutingOptimizer {
             destroy.destroy(candidate, projection, k);
             repair.repair(candidate, projection);
 
-            double candidateScore = candidate.score();
-            double currentScore   = current.score();
-            double bestScore      = best.score();
+            double candidateScore = candidate.score(horizonMax);
+            double currentScore   = current.score(horizonMax);
+            double bestScore      = best.score(horizonMax);
 
             if (candidateScore < bestScore) {
                 best    = candidate.deepCopy();
@@ -95,6 +105,6 @@ public class ALNSAlgorithm implements RoutingOptimizer {
             }
         }
 
-        return best.toSolutionResult(projection);
+        return best.toSolutionResult(projection, horizonMax);
     }
 }

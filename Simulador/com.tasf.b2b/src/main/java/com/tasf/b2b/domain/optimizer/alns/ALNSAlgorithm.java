@@ -8,6 +8,7 @@ import com.tasf.b2b.domain.optimizer.alns.destroy.OverloadedFlightRemoval;
 import com.tasf.b2b.domain.optimizer.alns.destroy.RandomRemoval;
 import com.tasf.b2b.domain.optimizer.alns.destroy.ShawRemoval;
 import com.tasf.b2b.domain.optimizer.alns.destroy.TimeWindowRemoval;
+import com.tasf.b2b.domain.optimizer.alns.destroy.UnroutedRelatedRemoval;
 import com.tasf.b2b.domain.optimizer.alns.destroy.WorstRemoval;
 import com.tasf.b2b.domain.optimizer.alns.repair.GreedyInsertion;
 import com.tasf.b2b.domain.optimizer.alns.repair.MinWaitInsertion;
@@ -21,12 +22,15 @@ import java.util.Random;
 
 public class ALNSAlgorithm implements RoutingOptimizer {
 
-    private static final long   TIME_BUDGET_MS   = 150;
-    private static final double REWARD_NEW_BEST   = 3.0;
-    private static final double REWARD_ACCEPTED   = 1.0;
-    private static final double REWARD_REJECTED   = 0.0;
-    private static final double INITIAL_TEMP      = 50.0;
-    private static final double COOLING_RATE      = 0.97;
+    private static final long   TIME_BUDGET_MS  = 175;
+    private static final double REWARD_NEW_BEST = 3.0;
+    private static final double REWARD_ACCEPTED = 1.0;
+    private static final double REWARD_REJECTED = 0.0;
+    // Temperatura inicial bajada de 50 a 20: con ~10 iteraciones por ejecución,
+    // 50 casi nunca enfría (0.97^10 = 0.74 × 50 = 37°). Con 20 y 0.90, llegamos
+    // a 20 × 0.90^10 = 7° al final, lo que da selectividad real al SA.
+    private static final double INITIAL_TEMP    = 20.0;
+    private static final double COOLING_RATE    = 0.90;
 
     private final Random random;
 
@@ -51,7 +55,8 @@ public class ALNSAlgorithm implements RoutingOptimizer {
                 new ShawRemoval(random),
                 new WorstRemoval(),
                 new TimeWindowRemoval(random),
-                new OverloadedFlightRemoval()
+                new OverloadedFlightRemoval(),
+                new UnroutedRelatedRemoval(random)
         );
         List<RepairOperator> repairOps = List.of(
                 new GreedyInsertion(),
@@ -73,12 +78,17 @@ public class ALNSAlgorithm implements RoutingOptimizer {
         BaggageSolution current = GraspInitializer.initialize(projection, random);
         BaggageSolution best    = current.deepCopy();
 
-        int k = Math.max(1, projection.pendingBaggages().size() / 5);
+        int baseK = Math.max(1, projection.pendingBaggages().size() / 5);
+        int maxK  = Math.max(1, projection.pendingBaggages().size() / 3);
 
         long deadline = System.currentTimeMillis() + TIME_BUDGET_MS;
 
         while (System.currentTimeMillis() < deadline) {
             BaggageSolution candidate = current.deepCopy();
+
+            // k crece cuando hay maletas sin ruta: destrucción más agresiva para
+            // intentar resolver conflictos de capacidad.
+            int k = Math.min(maxK, Math.max(baseK, current.unrouted().size()));
 
             DestroyOperator destroy = destroySel.select();
             RepairOperator  repair  = repairSel.select();

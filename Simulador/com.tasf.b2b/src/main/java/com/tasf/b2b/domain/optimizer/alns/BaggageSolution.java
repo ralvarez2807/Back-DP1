@@ -61,29 +61,30 @@ public class BaggageSolution {
     }
 
     /**
-     * (x/2) * (1 - min(ratio_i)) donde x=2, score ∈ [0, 2].
+     * Objetivo lexicográfico en un solo double. Score menor = mejor.
+     *
+     * Primario:   unrouted.size() × 2.0   (cada maleta sin ruta penaliza +2)
+     * Secundario: promedio de (1-ratio_i) sobre maletas rutadas  ∈ [0, 1]
+     *
+     * Como el máximo costo de una maleta rutada es 1.0 (llega exactamente al deadline —
+     * RouteFinder descarta llegadas tardías), la penalidad 2.0 garantiza que CUALQUIER
+     * solución con K sin ruta sea peor que CUALQUIER solución con K-1 sin ruta,
+     * sin importar cuán buenas sean el resto:
+     *   K × 2.0  >  (K-1) × 2.0 + 1.0   ⟺   0 > -1  ✓
+     *
      * ratio_i = (deadline - arrTime) / (deadline - availableFrom)
-     * Sin ruta → arrTime = horizonMax (peor caso).
-     * Score menor = mejor. Protege al paquete más justo (min sobre todos).
      */
     public double score(Instant horizonMax) {
-        double minRatio = Double.MAX_VALUE;
-
+        if (routes.isEmpty() && unrouted.isEmpty()) return 0.0;
+        double routedCost = 0.0;
         for (Map.Entry<BaggageState, List<FlightSnapshot>> e : routes.entrySet()) {
             BaggageState bs = e.getKey();
             List<FlightSnapshot> route = e.getValue();
             Instant arrTime = route.isEmpty() ? horizonMax : route.getLast().arrTime();
-            double ratio = ratio(bs, arrTime);
-            if (ratio < minRatio) minRatio = ratio;
+            routedCost += (1.0 - ratio(bs, arrTime));
         }
-
-        for (BaggageState bs : unrouted) {
-            double ratio = ratio(bs, horizonMax);
-            if (ratio < minRatio) minRatio = ratio;
-        }
-
-        if (minRatio == Double.MAX_VALUE) return 0.0;
-        return 1.0 - minRatio;
+        double routedAvg = routes.isEmpty() ? 0.0 : routedCost / routes.size();
+        return unrouted.size() * 2.0 + routedAvg;
     }
 
     private double ratio(BaggageState bs, Instant arrTime) {

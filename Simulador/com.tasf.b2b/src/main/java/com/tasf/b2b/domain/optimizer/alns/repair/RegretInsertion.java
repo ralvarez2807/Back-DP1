@@ -13,12 +13,26 @@ import java.util.*;
 /**
  * Inserta primero el baggage con mayor regret: diferencia entre la mejor y la segunda-mejor ruta.
  * Baggages sin segunda ruta tienen regret infinito y se insertan primero.
+ * Si hay más de REGRET_LIMIT baggages sin ruta, cae a orden por deadline para no
+ * exceder el budget de 150ms del ALNS (regret dinámico es O(N²) en llamadas a RouteFinder).
  */
 public class RegretInsertion implements RepairOperator {
+
+    private static final int REGRET_LIMIT = 8;
 
     @Override
     public void repair(BaggageSolution solution, AlnsProjection projection) {
         List<BaggageState> unrouted = new ArrayList<>(solution.unrouted());
+        if (unrouted.isEmpty()) return;
+
+        if (unrouted.size() > REGRET_LIMIT) {
+            unrouted.sort(Comparator.comparing(BaggageState::deadline));
+            for (BaggageState baggage : unrouted) {
+                List<FlightSnapshot> route = RouteFinder.findRoute(baggage, solution, projection);
+                if (!route.isEmpty()) solution.addRoute(baggage, route);
+            }
+            return;
+        }
 
         while (!unrouted.isEmpty()) {
             BaggageState best = null;
@@ -43,7 +57,6 @@ public class RegretInsertion implements RepairOperator {
                 }
             }
 
-            // If any unrouted baggage has no route at all, skip it this iteration
             if (best == null) break;
 
             solution.addRoute(best, bestRoute);

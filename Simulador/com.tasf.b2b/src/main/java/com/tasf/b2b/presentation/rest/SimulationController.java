@@ -51,7 +51,8 @@ public class SimulationController {
             String  optimizerMode,
             Instant simStart,
             Instant simEnd,
-            Double  speedFactor
+            Double  speedFactor,
+            Boolean collapseOnFailure
     ) {}
 
     /**
@@ -91,7 +92,8 @@ public class SimulationController {
         }
 
         StartSimulationCommand cmd = new StartSimulationCommand(principal.getName(), ds, stm, om,
-                req.simStart(), req.simEnd(), req.speedFactor());
+                req.simStart(), req.simEnd(), req.speedFactor(),
+                Boolean.TRUE.equals(req.collapseOnFailure()));
 
         String sessionId = controlPort.start(cmd);
         return SessionResponse.from(queryPort.getSession(sessionId));

@@ -45,7 +45,7 @@ public class SimulationMain {
     private static final double  SPEED_FACTOR = 80.0;
 
     public static void main(String[] args) throws Exception {
-
+        /*
         // ── 1. Carga inicial de aeropuertos (una sola vez) ────────────────────
         Path airportsFile = resourcePath("c.1inf54.26.1.v1.Aeropuerto.husos.v1.20250818__estudiantes.txt");
         Map<String, AirportDataDTO> airports = AirportParser.parse(airportsFile);
@@ -160,11 +160,14 @@ public class SimulationMain {
 
     private static double pct(int part, int total) {
         return total == 0 ? 0.0 : 100.0 * part / total;
-    }
+    }*/
 
-    /** Resuelve un recurso del classpath a Path (funciona tanto en IDE como en JAR). */
+        /** Resuelve un recurso del classpath a Path (funciona tanto en IDE como en JAR). */
+    /*
     private static Path resourcePath(String name) throws Exception {
         URI uri = SimulationMain.class.getClassLoader().getResource(name).toURI();
         return Paths.get(uri);
+    */
     }
+
 }

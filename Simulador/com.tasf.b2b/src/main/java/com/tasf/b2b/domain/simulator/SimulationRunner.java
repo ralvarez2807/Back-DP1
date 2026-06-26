@@ -8,6 +8,8 @@ import com.tasf.b2b.domain.model.graph.movable.Shipment;
 import com.tasf.b2b.domain.simulator.dto.*;
 import com.tasf.b2b.domain.simulator.event.*;
 
+import java.time.Duration;
+
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -97,14 +99,15 @@ public class SimulationRunner implements Runnable {
 
     private void process(SimEvent event) {
         switch (event) {
-            case HorizonExpandEvent   e -> handleHorizonExpand(e);
-            case FlightDepartureEvent e -> handleFlightDeparture(e);
-            case FlightArrivalEvent   e -> handleFlightArrival(e);
-            case FlightCancelledEvent e -> handleFlightCancelled(e);
-            case BaggagePickupEvent   e -> handleBaggagePickup(e);
-            case NewShipmentEvent     e -> handleNewShipment(e);
-            case RouteSolutionEvent   e -> handleRouteSolution(e);
-            case SimulationEndEvent   e -> running = false;
+            case HorizonExpandEvent    e -> handleHorizonExpand(e);
+            case FlightDepartureEvent  e -> handleFlightDeparture(e);
+            case FlightArrivalEvent    e -> handleFlightArrival(e);
+            case FlightCancelledEvent  e -> handleFlightCancelled(e);
+            case BaggagePickupEvent    e -> handleBaggagePickup(e);
+            case NewShipmentEvent      e -> handleNewShipment(e);
+            case RouteSolutionEvent    e -> handleRouteSolution(e);
+            case CollapseDetectedEvent e -> handleCollapseDetected(e);
+            case SimulationEndEvent    e -> running = false;
             default -> throw new IllegalStateException(
                     "Evento sin handler: " + event.getClass().getSimpleName());
         }
@@ -310,6 +313,26 @@ public class SimulationRunner implements Runnable {
                 solutionCount, proposed,
                 stale, proposed > 0 ? 100.0 * stale / proposed : 0.0,
                 applied, e.getUnroutedCount(), e.getAlnsScore()));
+    }
+
+    private void handleCollapseDetected(CollapseDetectedEvent e) {
+        CollapseDetector.CollapseInfo info = e.getInfo();
+        String reasonLabel = switch (info.reason()) {
+            case DEADLINE_EXCEEDED -> String.format(
+                    "deadline superado por %d min",
+                    Duration.between(info.primaryDeadline(), clock.now()).toMinutes());
+            case NO_VIABLE_ROUTE   -> String.format(
+                    "sin ruta viable tras %d ciclos consecutivos", info.consecutiveCycles());
+        };
+        log(String.format(
+                "*** COLAPSO *** maleta=%s | razón=%s | deadline=%s",
+                info.primaryBaggageId(), reasonLabel, info.primaryDeadline()));
+
+        publisher.publish(new CollapseDetectedDTO(
+                clock.now(), info.reason(), info.primaryBaggageId(),
+                info.primaryDeadline(), info.consecutiveCycles()));
+
+        running = false;
     }
 
     private void log(String msg) {

@@ -5,8 +5,8 @@ import java.time.Duration;
 public class DeliveryTypeValue {
     private DeliveryType deliveryType;
     private Duration maxDeliveryTime;
-    private static final Duration MAXDELIVERYTIMEINTRACONTINENTAL = Duration.ofHours(12);
-    private static final Duration MAXDELIVERYTIMEINTERCONTINENTAL = Duration.ofHours(24);
+    private static final Duration MAXDELIVERYTIMEINTRACONTINENTAL = Duration.ofHours(24);
+    private static final Duration MAXDELIVERYTIMEINTERCONTINENTAL = Duration.ofHours(48);
 
 
     private DeliveryTypeValue(DeliveryType deliveryType, Duration maxDeliveryTime) {

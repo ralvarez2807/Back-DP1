@@ -14,5 +14,6 @@ public record StartSimulationCommand(
         SimulationConfig.OptimizerMode    optimizerMode,
         Instant                           simStart,
         Instant                           simEnd,
-        Double                            speedFactor
+        Double                            speedFactor,
+        boolean                           collapseOnFailure
 ) {}

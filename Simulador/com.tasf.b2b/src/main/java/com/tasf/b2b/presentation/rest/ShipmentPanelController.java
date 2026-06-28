@@ -1,5 +1,6 @@
 package com.tasf.b2b.presentation.rest;
 
+import com.tasf.b2b.application.dto.ShipmentDiagnosticsView;
 import com.tasf.b2b.application.dto.ShipmentView;
 import com.tasf.b2b.application.port.in.SimulationQueryPort;
 import org.springframework.web.bind.annotation.*;
@@ -94,5 +95,13 @@ public class ShipmentPanelController {
             @PathVariable String id,
             @PathVariable String shipmentId) {
         return ShipmentDetailResponse.from(queryPort.getShipmentDetail(id, shipmentId));
+    }
+
+    // Forense de por qué un envío incumplió SLA / quedó sin ruta.
+    @GetMapping("/{id}/shipments/{shipmentId}/diagnostics")
+    public ShipmentDiagnosticsView getShipmentDiagnostics(
+            @PathVariable String id,
+            @PathVariable String shipmentId) {
+        return queryPort.getShipmentDiagnostics(id, shipmentId);
     }
 }

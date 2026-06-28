@@ -6,6 +6,7 @@ import com.tasf.b2b.application.dto.DashboardView;
 import com.tasf.b2b.application.dto.AirportLiveView;
 import com.tasf.b2b.application.dto.FlightView;
 import com.tasf.b2b.application.dto.ReportView;
+import com.tasf.b2b.application.dto.ShipmentDiagnosticsView;
 import com.tasf.b2b.application.dto.ShipmentView;
 import com.tasf.b2b.application.dto.SimSessionView;
 import com.tasf.b2b.application.dto.SnapshotView;
@@ -15,6 +16,11 @@ import com.tasf.b2b.application.port.in.SimulationQueryPort;
 import com.tasf.b2b.domain.model.graph.SpaceTimeGraph;
 import com.tasf.b2b.domain.model.graph.componentsgraph.FlightEdge;
 import com.tasf.b2b.domain.model.graph.movable.Baggage;
+import com.tasf.b2b.domain.optimizer.alns.AlnsProjection;
+import com.tasf.b2b.domain.optimizer.alns.AlnsProjectionBuilder;
+import com.tasf.b2b.domain.optimizer.alns.BaggageState;
+import com.tasf.b2b.domain.optimizer.alns.FlightSnapshot;
+import com.tasf.b2b.domain.optimizer.alns.RouteFinder;
 import com.tasf.b2b.domain.simulator.SimulationClock;
 import com.tasf.b2b.domain.simulator.SimulationRunner;
 
@@ -579,6 +585,128 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
 
         return new ShipmentView.BaggageDetail(
                 b.getId(), status, b.getCurrentAirport(), eta, onTime, legs);
+    }
+
+    // ── getShipmentDiagnostics ────────────────────────────────────────────────
+
+    @Override
+    public ShipmentDiagnosticsView getShipmentDiagnostics(String sessionId, String shipmentId) {
+        SimulationSession session = registry.findOrThrow(sessionId);
+        SimulationRunner  runner  = session.getRunner();
+        SpaceTimeGraph    graph   = session.getGraph();
+        Instant simNow         = runner.getClock().now();
+        int     pickupMinutes  = runner.getConfig().pickupMinutes();
+        int     connectMinutes = runner.getConfig().minConnectionMinutes();
+
+        List<Baggage> active = new ArrayList<>();
+        active.addAll(new ArrayList<>(graph.getPendingBaggages()));
+        active.addAll(new ArrayList<>(graph.getAssignedBaggages()));
+        active = active.stream()
+                .filter(b -> b.getShipment().getShipmentData().getId().equals(shipmentId))
+                .collect(Collectors.toList());
+        List<Baggage> delivered = runner.getDeliveredBaggages().stream()
+                .filter(b -> b.getShipment().getShipmentData().getId().equals(shipmentId))
+                .collect(Collectors.toList());
+
+        if (active.isEmpty() && delivered.isEmpty())
+            throw new IllegalArgumentException("Envío no encontrado: " + shipmentId);
+
+        Baggage sample    = active.isEmpty() ? delivered.get(0) : active.get(0);
+        String  originIcao = sample.getShipment().getShipmentData().getOriginAirport().getIcao();
+        String  destIcao   = sample.getDestIcao();
+        Instant deadline   = sample.getDeadlineUtc();
+
+        // Mismo snapshot del grafo que ve el ALNS en cada ciclo.
+        AlnsProjection projection = AlnsProjectionBuilder.build(graph, simNow, connectMinutes, pickupMinutes);
+
+        List<ShipmentDiagnosticsView.BaggageDiagnostic> diags = new ArrayList<>();
+
+        // Entregadas pero tarde
+        for (Baggage b : delivered) {
+            Instant deliveredAt = actualDeliveryInstant(b, pickupMinutes);
+            if (deliveredAt != null && b.getDeadlineUtc() != null && deliveredAt.isAfter(b.getDeadlineUtc())) {
+                long lateMin = Duration.between(b.getDeadlineUtc(), deliveredAt).toMinutes();
+                diags.add(new ShipmentDiagnosticsView.BaggageDiagnostic(
+                        b.getId(), "DELIVERED", b.getDestIcao(), deliveredAt,
+                        Duration.between(simNow, b.getDeadlineUtc()).toMinutes(),
+                        true, false, deliveredAt, lateMin, b.getRouteTraveled().size(),
+                        ShipmentDiagnosticsView.VERDICT_DELIVERED_LATE,
+                        "Entregada " + lateMin + " min tarde.", List.of()));
+            }
+        }
+
+        // Activas problemáticas: sin ruta completa o ya vencidas
+        for (Baggage b : active) {
+            boolean past = b.getDeadlineUtc() != null && b.getDeadlineUtc().isBefore(simNow);
+            if (b.isRouteComplete() && !past) continue;
+
+            String  status; String currentIcao; Instant availableFrom;
+            if (b.getCurrentEdge() instanceof FlightEdge fe) {
+                status = "IN_FLIGHT";
+                currentIcao   = fe.getToNode().getIcao();
+                availableFrom = fe.getToNode().getTimeUtc().isAfter(simNow) ? fe.getToNode().getTimeUtc() : simNow;
+            } else if (b.isUnassigned()) {
+                status = "PENDING"; currentIcao = b.getCurrentAirport(); availableFrom = simNow;
+            } else {
+                status = "WAITING"; currentIcao = b.getCurrentAirport(); availableFrom = simNow;
+            }
+
+            BaggageState bs = new BaggageState(b.getId(), currentIcao, availableFrom, destIcao, b.getDeadlineUtc());
+            List<FlightSnapshot> best = RouteFinder.findFastestIgnoringDeadline(bs, projection);
+
+            boolean reachable; Instant bestArr; long bestLate; int hops; String verdict; String expl;
+            if (best.isEmpty()) {
+                reachable = false; bestArr = null; bestLate = 0; hops = 0;
+                verdict = ShipmentDiagnosticsView.VERDICT_NO_CONNECTIVITY;
+                expl = "No existe NINGUNA cadena de vuelos desde " + currentIcao + " hacia " + destIcao
+                     + " en el horizonte (ni ignorando el deadline). Falta conectividad o capacidad.";
+            } else {
+                bestArr  = best.get(best.size() - 1).arrTime();
+                hops     = best.size();
+                reachable = b.getDeadlineUtc() == null || !bestArr.isAfter(b.getDeadlineUtc());
+                bestLate  = b.getDeadlineUtc() == null ? 0 : Duration.between(b.getDeadlineUtc(), bestArr).toMinutes();
+                if (!reachable) {
+                    verdict = ShipmentDiagnosticsView.VERDICT_DEADLINE_INFEASIBLE;
+                    expl = "La ruta más rápida posible (" + hops + " vuelo[s]) llega " + bestLate
+                         + " min DESPUÉS del deadline. Es físicamente imposible cumplir el SLA desde aquí; "
+                         + "el fallo ocurrió antes (se posicionó tarde o perdió una conexión).";
+                } else if (!b.isRouteComplete()) {
+                    verdict = ShipmentDiagnosticsView.VERDICT_PLANNER_MISS;
+                    expl = "SÍ existe una ruta que llega a tiempo (" + hops + " vuelo[s], holgura "
+                         + (-bestLate) + " min) pero quedó SIN RUTA. Revisar el optimizador.";
+                } else {
+                    verdict = ShipmentDiagnosticsView.VERDICT_ON_TRACK;
+                    expl = "Tiene ruta que llega a tiempo; aparece como vencida solo porque su deadline pasó estando en tránsito.";
+                }
+            }
+
+            List<ShipmentDiagnosticsView.DirectFlightInfo> directs = new ArrayList<>();
+            var byTime = projection.flightsByOrigin().get(currentIcao);
+            if (byTime != null) {
+                for (var bucket : byTime.values()) {
+                    for (FlightSnapshot f : bucket) {
+                        if (!f.toIcao().equals(destIcao)) continue;
+                        boolean depOk = !f.depTime().isBefore(availableFrom.plusSeconds(pickupMinutes * 60L));
+                        boolean arrOk = b.getDeadlineUtc() == null || !f.arrTime().isAfter(b.getDeadlineUtc());
+                        boolean capOk = f.remainingCapacity() > 0;
+                        boolean usable = depOk && arrOk && capOk;
+                        String reason = usable ? "Usable"
+                                : !depOk ? "Sale antes de que la maleta esté lista"
+                                : !capOk ? "Sin capacidad"
+                                : "Llega después del deadline";
+                        directs.add(new ShipmentDiagnosticsView.DirectFlightInfo(
+                                f.flightId(), f.depTime(), f.arrTime(), f.remainingCapacity(), usable, reason));
+                    }
+                }
+            }
+
+            diags.add(new ShipmentDiagnosticsView.BaggageDiagnostic(
+                    b.getId(), status, currentIcao, availableFrom,
+                    b.getDeadlineUtc() == null ? 0 : Duration.between(simNow, b.getDeadlineUtc()).toMinutes(),
+                    b.isRouteComplete(), reachable, bestArr, bestLate, hops, verdict, expl, directs));
+        }
+
+        return new ShipmentDiagnosticsView(shipmentId, originIcao, destIcao, deadline, simNow, diags);
     }
 
     // ── getAirports ───────────────────────────────────────────────────────────

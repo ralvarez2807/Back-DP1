@@ -3,6 +3,7 @@ package com.tasf.b2b.presentation.rest;
 import com.tasf.b2b.application.dto.ShipmentDiagnosticsView;
 import com.tasf.b2b.application.dto.ShipmentView;
 import com.tasf.b2b.application.port.in.SimulationQueryPort;
+import com.tasf.b2b.domain.simulator.dto.SlaBreachInfo;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -103,5 +104,11 @@ public class ShipmentPanelController {
             @PathVariable String id,
             @PathVariable String shipmentId) {
         return queryPort.getShipmentDiagnostics(id, shipmentId);
+    }
+
+    // Foto forense de cada incumplimiento de SLA en el instante en que ocurrió.
+    @GetMapping("/{id}/sla-breaches")
+    public List<SlaBreachInfo> getSlaBreaches(@PathVariable String id) {
+        return queryPort.getSlaBreaches(id);
     }
 }

@@ -112,9 +112,12 @@ Eventos que circulan por la `DelayQueue` del `SimulationRunner`. Todos implement
 | `FlightDepartureEvent` | Runner (al expandir horizonte) | Para cada baggage cuyo `peekNextEdge() == fe`: libera `WaitEdge` anterior (`release()`), llama `baggage.setCurrentEdge(fe)` (`WaitEdge → FlightEdge`). Publica `FLIGHT_DEPARTED` + `BAGGAGE_DEPARTED` por cada baggage a bordo. |
 | `FlightArrivalEvent` | Runner (al expandir horizonte) | Para cada baggage cuyo `getCurrentEdge() == fe`: llama `confirmNextEdge()` + `setCurrentEdge(nextWaitEdge)` + `waitEdge.assign()` (`FlightEdge → WaitEdge`). Si llegó a destino: entregado. Si ruta vacía: vuelve a pending. Publica `FLIGHT_ARRIVED` + `BAGGAGE_ARRIVED` / `BAGGAGE_DELIVERED`. |
 | `FlightCancelledEvent` | `CancellationInjectorThread` | Cancela el vuelo en el grafo; desasigna baggages afectados (los que tienen ese vuelo en `expectedRoute`); publica `FLIGHT_CANCELLED` + `BAGGAGE_PENDING`. |
-| `NewShipmentEvent` | `ShipmentInjectorThread` | Crea `Shipment`, agrega baggages al grafo; asigna `currentEdge` al primer `WaitEdge` disponible en el nodo de entrada; publica `SHIPMENT_CREATED`. |
+| `NewShipmentEvent` | `ShipmentInjectorThread` | Crea `Shipment`, agrega baggages al grafo; asigna `currentEdge` al primer `WaitEdge` disponible en el nodo de entrada; programa un `SlaDeadlineEvent` por maleta en su deadline; publica `SHIPMENT_CREATED`. |
+| `SlaDeadlineEvent` | Runner (al crear cada envío) | Dispara en el deadline de una maleta. Si ya fue entregada (set `deliveredIds`), no hace nada. Si no, es un incumplimiento de SLA: captura la foto forense del instante (`SlaBreachInfo`: ubicación, estado, ruta planificada, causa clasificada) y la acumula en `slaBreaches`. Lo expone `GET /sla-breaches`. |
 | `RouteSolutionEvent` | `AlnsThread` / `GeneticThread` | Lleva `routes` + `unroutedCount` + `alnsScore`. Para cada ruta: si el primer `FlightEdge` ya partió (`depTime <= clock.now()`), la descarta y deja el baggage en pending para re-enrute (manejo de solución obsoleta en `REAL_TIME`). Las rutas válidas se aplican: mueve de pending a assigned, publica `BAGGAGE_ASSIGNED`. |
 | `SimulationEndEvent` | Runner (al init) | Detiene el loop. |
+
+> **Medición de SLA.** El cumplimiento se mide contra la **entrega real** = llegada al destino `+ pickupMinutes` (instante del `BaggagePickupEvent`). El runner mantiene un `Set<String> deliveredIds` para el chequeo O(1) del `SlaDeadlineEvent`. El forense en vivo equivalente (calculado a demanda, no en el instante del fallo) está en `GET /shipments/:id/diagnostics`.
 
 ---
 

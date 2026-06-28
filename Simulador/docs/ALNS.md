@@ -153,9 +153,12 @@ Usa Dijkstra sobre el grafo espacio-temporal con las siguientes restricciones:
 - Respeta capacidad de los vuelos
 - Máximo 8 vuelos por ruta
 
-Dos variantes:
-- `findRoute()` → minimiza tiempo de llegada
+Variantes:
+- `findRoute()` → minimiza tiempo de llegada (descarta llegadas posteriores al deadline)
 - `findRouteMinHops()` → minimiza número de escalas
+- `findFastestIgnoringDeadline()` → **solo diagnóstico**, no lo usa el ciclo del ALNS. Minimiza la llegada **ignorando el deadline** (respeta capacidad). Sirve para distinguir un fallo del planificador de una infactibilidad real de horario: si la llegada más temprana posible ya supera el deadline → imposible por horario; si llega a tiempo y la maleta quedó sin ruta → fallo del planificador. Lo consume el endpoint `/shipments/:id/diagnostics`.
+
+> **Pocas escalas no es un defecto.** Como `findRoute()` minimiza la llegada y suele haber capacidad de sobra, casi siempre gana el vuelo directo. Las escalas aparecen solo cuando no hay directo o una conexión llega antes. El optimizador **no** considera la capacidad de los almacenes (solo la de vuelo).
 
 ---
 

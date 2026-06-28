@@ -47,8 +47,10 @@ Base URL: `http://localhost:8080/api/v1`
 | ✅ | GET | `/simulations/:id/airports/:icao/inbound` | vuelos planificados entrantes |
 | ✅ | GET | `/simulations/:id/airports/:icao/outbound` | vuelos planificados salientes |
 | ✅ | GET | `/simulations/:id/airports/:icao/transit` | maletas esperando conexión |
-| ✅ | GET | `/simulations/:id/shipments` | todos los envíos con conteo por estado |
+| ✅ | GET | `/simulations/:id/shipments` | todos los envíos con conteo por estado (incl. `breached`) |
 | ✅ | GET | `/simulations/:id/shipments/:shipmentId` | detalle de un envío con sus maletas |
+| ✅ | GET | `/simulations/:id/shipments/:shipmentId/diagnostics` | forense: por qué una maleta quedó sin ruta / vencida |
+| ✅ | GET | `/simulations/:id/sla-breaches` | foto del instante exacto de cada incumplimiento de SLA |
 | ✅ | GET | `/simulations/:id/baggage/:baggageId` | tracking de una maleta |
 | ✅ | GET | `/simulations/:id/baggage/:baggageId/route` | ruta completa de una maleta |
 | ✅ | GET | `/simulations/:id/reports/summary` | resumen de simulación |
@@ -499,6 +501,8 @@ Response `200`:
 }
 ```
 
+`slaBreaches` = maletas activas con deadline ya pasado **+** entregadas cuya **entrega real** (`arrival + pickupMinutes`) superó el deadline. Para el detalle del instante de cada incumplimiento ver `GET /simulations/:id/sla-breaches`.
+
 ---
 
 ### GET /simulations/:id/snapshot — ✅
@@ -712,8 +716,11 @@ Los envíos agrupan maletas por `shipmentId`. Las maletas se obtienen de `pendin
 Categorías de conteo:
 - `delivered` — maletas entregadas en su destino
 - `noRoute` — maletas activas sin ruta asignada aún (ALNS pendiente)
-- `onTime` — maletas activas con ruta donde `estimatedArrival ≤ deadlineUtc`
-- `late` — maletas activas con ruta donde `estimatedArrival > deadlineUtc`
+- `onTime` — maletas activas con ruta donde la **entrega planificada** (`arrival + pickupMinutes`) `≤ deadlineUtc`
+- `late` — maletas activas con ruta donde la entrega planificada `> deadlineUtc`
+- `breached` — maletas activas **sin entregar cuyo deadline ya pasó** (proxy en vivo de "no entregada"). El front lo usa para el estado **VENCIDO** y su filtro.
+
+> **Semántica de SLA (importante).** El cumplimiento se mide siempre contra la **entrega real** = llegada al destino `+ pickupMinutes` (el instante del `BaggagePickupEvent`), no contra la mera llegada. El contador `slaBreaches` del dashboard cuenta: activas con deadline ya pasado **+** entregadas cuya entrega real superó el deadline (antes comparaba el deadline contra el reloj actual, lo que inflaba el contador con entregas a tiempo).
 
 ---
 
@@ -733,7 +740,8 @@ Response `200`:
     "delivered":     1,
     "noRoute":       0,
     "onTime":        2,
-    "late":          0
+    "late":          0,
+    "breached":      0
   }
 ]
 ```
@@ -779,9 +787,67 @@ Response `200`:
 
 `status`: `PENDING` | `WAITING` | `IN_FLIGHT` | `DELIVERED`  
 `state` de tramo: `ARRIVED` (recorrido) | `DEPARTED` (en vuelo ahora) | `PLANNED` (futuro)  
-`estimatedArrival` y `onTime` son `null` cuando la maleta no tiene ruta completa o ya fue entregada.
+`estimatedArrival` y `onTime` son `null` cuando la maleta no tiene ruta completa o ya fue entregada.  
+`onTime` se evalúa contra la entrega real (`arrival + pickupMinutes`), no contra la sola llegada.
+
+> El front reutiliza este endpoint para **dibujar la ruta del envío en el mapa** (toma la maleta con más tramos como ruta representativa, con sus escalas).
 
 Errores: `404` envío no existe en la sesión
+
+---
+
+### GET /simulations/:id/shipments/:shipmentId/diagnostics — ✅
+
+Forense **en vivo** (calculado al momento de la llamada) de por qué cada maleta problemática del envío no se pudo planificar. Corre el mismo `RouteFinder` del ALNS pero **ignorando el deadline** (`findFastestIgnoringDeadline`) para distinguir un fallo del planificador de una infactibilidad real de horario.
+
+Response `200`:
+```json
+{
+  "shipmentId": "000008665", "originIcao": "LATI", "destIcao": "EHAM",
+  "deadlineUtc": "2027-06-30T11:33:00Z", "simNowUtc": "2027-06-30T02:25:00Z",
+  "baggages": [
+    {
+      "baggageId": "000008665-B5", "status": "WAITING", "currentIcao": "LATI",
+      "availableFromUtc": "2027-06-30T02:25:00Z", "minutesToDeadline": 548,
+      "hasCompleteRoute": false, "reachableInTime": true,
+      "bestEffortArrivalUtc": "2027-06-30T09:10:00Z", "bestEffortLateMinutes": -143,
+      "bestEffortHops": 1, "verdict": "PLANNER_MISS",
+      "explanation": "SÍ existe una ruta que llega a tiempo … pero quedó SIN RUTA.",
+      "directFlights": [
+        { "flightId": "LATI-EHAM-07:00", "depUtc": "…", "arrUtc": "…",
+          "remainingCapacity": 280, "usable": true, "reason": "Usable" }
+      ]
+    }
+  ]
+}
+```
+
+`verdict`: `PLANNER_MISS` (existía ruta a tiempo y no se usó) · `DEADLINE_INFEASIBLE` (lo más rápido ya llega tarde) · `NO_CONNECTIVITY` (no hay cadena de vuelos ni ignorando deadline) · `DELIVERED_LATE` · `ON_TRACK`.
+
+Errores: `404` envío no existe en la sesión
+
+---
+
+### GET /simulations/:id/sla-breaches — ✅
+
+Foto forense del **instante exacto** en que cada maleta cruzó su deadline sin haber sido entregada (el momento en que el contador `slaBreaches` sube). Se captura con un `SlaDeadlineEvent` programado al deadline de cada maleta; refleja el estado real de ese instante, no un cálculo posterior.
+
+Response `200`:
+```json
+[
+  {
+    "breachTimeUtc": "2027-10-18T05:30:00Z", "baggageId": "000123-B2",
+    "shipmentId": "000123", "originIcao": "LATI", "destIcao": "EHAM",
+    "deadlineUtc": "2027-10-18T05:30:00Z", "statusAtBreach": "WAITING",
+    "locationIcao": "LBSF", "hadCompleteRoute": false,
+    "plannedEtaUtc": null, "plannedEtaLateMinutes": 0,
+    "cause": "SIN RUTA al vencer: el planificador nunca le asignó una ruta. No es capacidad de almacén/vuelo — quedó sin plan.",
+    "plannedRoute": [ { "fromIcao": "…", "toIcao": "…", "depUtc": "…", "arrUtc": "…", "state": "ARRIVED" } ]
+  }
+]
+```
+
+`statusAtBreach`: `PENDING` | `WAITING` | `IN_FLIGHT`. `cause` clasifica el culpable (sin ruta / ruta incompleta / ruta demasiado lenta / en tránsito tarde). El front lo muestra al hacer clic en el contador **"SLA venc."**.
 
 ---
 

@@ -925,6 +925,12 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 topRoutes);
     }
 
+    @Override
+    public List<com.tasf.b2b.domain.simulator.dto.SlaBreachInfo> getSlaBreaches(String sessionId) {
+        SimulationSession session = registry.findOrThrow(sessionId);
+        return session.getRunner().getSlaBreaches();
+    }
+
     private void requireAirport(SpaceTimeGraph graph, String icao) {
         if (graph.getAirport(icao) == null)
             throw new IllegalArgumentException("Aeropuerto no encontrado: " + icao);

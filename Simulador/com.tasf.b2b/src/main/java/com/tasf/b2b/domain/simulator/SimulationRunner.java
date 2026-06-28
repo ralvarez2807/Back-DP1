@@ -40,6 +40,10 @@ public class SimulationRunner implements Runnable {
 
     //TODO: deliveredBaggages luego no servirá — se guardará un histórico en PostgreSQL
     private final List<Baggage> deliveredBaggages;
+    // IDs entregados para chequeo O(1) en el evento de deadline (SLA).
+    private final Set<String>   deliveredIds;
+    // Foto forense de cada incumplimiento de SLA, en orden de ocurrencia.
+    private final List<com.tasf.b2b.domain.simulator.dto.SlaBreachInfo> slaBreaches;
 
     private volatile boolean running;
 
@@ -57,6 +61,8 @@ public class SimulationRunner implements Runnable {
         this.simEnd            = config.simEnd();
         this.eventQueue        = new DelayQueue<>();
         this.deliveredBaggages = new ArrayList<>();
+        this.deliveredIds      = new HashSet<>();
+        this.slaBreaches       = new ArrayList<>();
         this.running           = false;
     }
 
@@ -105,6 +111,7 @@ public class SimulationRunner implements Runnable {
             case FlightCancelledEvent  e -> handleFlightCancelled(e);
             case BaggagePickupEvent    e -> handleBaggagePickup(e);
             case NewShipmentEvent      e -> handleNewShipment(e);
+            case SlaDeadlineEvent      e -> handleSlaDeadline(e);
             case RouteSolutionEvent    e -> handleRouteSolution(e);
             case CollapseDetectedEvent e -> handleCollapseDetected(e);
             case SimulationEndEvent    e -> running = false;
@@ -223,6 +230,7 @@ public class SimulationRunner implements Runnable {
     private void handleBaggagePickup(BaggagePickupEvent e) {
         Baggage baggage = e.getBaggage();
         deliveredBaggages.add(baggage);
+        deliveredIds.add(baggage.getId());
         log("Maleta entregada: " + baggage.getId());
         publisher.publish(new BaggageDeliveredDTO(
                 clock.now(),
@@ -257,6 +265,13 @@ public class SimulationRunner implements Runnable {
         log("Nuevo shipment: " + e.getShipmentData().getId()
                 + " (" + graph.getPendingBaggages().size() + " maletas pendientes)");
 
+        // Programa un chequeo de SLA en el instante del deadline de cada maleta.
+        for (Baggage b : shipment.getBaggages()) {
+            if (b.getDeadlineUtc() != null) {
+                submit(new SlaDeadlineEvent(b.getDeadlineUtc(), b, clock));
+            }
+        }
+
         List<String> baggageIds = shipment.getBaggages().stream()
                 .map(Baggage::getId)
                 .toList();
@@ -267,6 +282,74 @@ public class SimulationRunner implements Runnable {
                 e.getShipmentData().getOriginAirport().getIcao(),
                 e.getShipmentData().getDestAirport().getIcao(),
                 shipment.getDeadlineUtc()));
+    }
+
+    // Dispara en el deadline de una maleta: si no llegó, captura la foto forense.
+    private void handleSlaDeadline(SlaDeadlineEvent e) {
+        Baggage b = e.getBaggage();
+        if (deliveredIds.contains(b.getId())) return;   // llegó a tiempo, no hay breach
+
+        Instant deadline = b.getDeadlineUtc();
+        STEdge  cur      = b.getCurrentEdge();
+
+        String status, location;
+        if (cur instanceof FlightEdge fe) {
+            status = "IN_FLIGHT";
+            location = fe.getFromNode().getIcao();        // de dónde salió el vuelo en curso
+        } else if (b.isUnassigned()) {
+            status = "PENDING";
+            location = b.getCurrentAirport();
+        } else {
+            status = "WAITING";
+            location = b.getCurrentAirport();
+        }
+
+        boolean hadRoute = b.isRouteComplete();
+        Instant eta      = null;
+        long    lateMin  = 0;
+        if (hadRoute) {
+            eta = b.getExpectedDestEdge().getToNode().getTimeUtc()
+                    .plus(config.pickupMinutes(), ChronoUnit.MINUTES);
+            lateMin = Duration.between(deadline, eta).toMinutes();
+        }
+
+        String cause;
+        if (b.isUnassigned()) {
+            cause = "SIN RUTA al vencer: el planificador nunca le asignó una ruta. "
+                  + "No es capacidad de almacén/vuelo — quedó sin plan.";
+        } else if (!hadRoute) {
+            cause = "Ruta incompleta al vencer: solo tenía plan hasta un punto intermedio ("
+                  + location + "), sin tramo final al destino.";
+        } else if ("IN_FLIGHT".equals(status)) {
+            cause = "En tránsito pero su ruta planificada ya llegaba tarde (ETA " + eta
+                  + ", " + lateMin + " min pasado el deadline).";
+        } else {
+            cause = "Tenía ruta asignada pero su ETA (" + eta + ") superaba el deadline en "
+                  + lateMin + " min: la ruta elegida era demasiado lenta.";
+        }
+
+        // Tramos del plan para inspección (recorridos + en curso + planificados)
+        List<com.tasf.b2b.domain.simulator.dto.SlaBreachInfo.Leg> legs = new ArrayList<>();
+        for (STEdge edge : b.getRouteTraveled()) {
+            if (edge instanceof FlightEdge fe) legs.add(legOf(fe, "ARRIVED"));
+        }
+        for (STEdge edge : b.getExpectedRoute()) {
+            if (edge instanceof FlightEdge fe) legs.add(legOf(fe, edge == cur ? "DEPARTED" : "PLANNED"));
+        }
+
+        var info = new com.tasf.b2b.domain.simulator.dto.SlaBreachInfo(
+                deadline, b.getId(), b.getShipment().getShipmentData().getId(),
+                b.getShipment().getShipmentData().getOriginAirport().getIcao(),
+                b.getDestIcao(), deadline, status, location, hadRoute, eta, lateMin, cause, legs);
+        slaBreaches.add(info);
+
+        log("*** SLA VENCIDO *** " + b.getId() + " @ " + location + " (" + status + ") | " + cause);
+    }
+
+    private com.tasf.b2b.domain.simulator.dto.SlaBreachInfo.Leg legOf(FlightEdge fe, String state) {
+        return new com.tasf.b2b.domain.simulator.dto.SlaBreachInfo.Leg(
+                fe.getFromNode().getIcao(), fe.getToNode().getIcao(),
+                fe.getFromNode().getTimeUtc(), fe.getToNode().getTimeUtc(), state);
     }
 
     private void handleRouteSolution(RouteSolutionEvent e) {
@@ -354,6 +437,11 @@ public class SimulationRunner implements Runnable {
 
     public List<Baggage> getDeliveredBaggages() {
         return Collections.unmodifiableList(deliveredBaggages);
+    }
+
+    /** Foto forense de cada incumplimiento de SLA, en orden de ocurrencia. */
+    public List<com.tasf.b2b.domain.simulator.dto.SlaBreachInfo> getSlaBreaches() {
+        return Collections.unmodifiableList(slaBreaches);
     }
 
     public SimulationClock   getClock()  { return clock; }

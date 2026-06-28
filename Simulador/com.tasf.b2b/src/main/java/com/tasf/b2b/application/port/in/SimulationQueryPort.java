@@ -10,6 +10,7 @@ import com.tasf.b2b.application.dto.ShipmentDiagnosticsView;
 import com.tasf.b2b.application.dto.ShipmentView;
 import com.tasf.b2b.application.dto.SimSessionView;
 import com.tasf.b2b.application.dto.SnapshotView;
+import com.tasf.b2b.domain.simulator.dto.SlaBreachInfo;
 
 import java.util.List;
 
@@ -116,4 +117,10 @@ public interface SimulationQueryPort {
 
     /** Métricas finales de la simulación. */
     ReportView getReport(String sessionId);
+
+    /**
+     * Foto forense de cada incumplimiento de SLA capturada en el instante exacto
+     * en que cada maleta cruzó su deadline sin haber sido entregada.
+     */
+    List<SlaBreachInfo> getSlaBreaches(String sessionId);
 }

@@ -19,12 +19,20 @@ public class AlnsProjectionBuilder {
 
         for (Baggage b : new ArrayList<>(graph.getPendingBaggages())) {
             baggageById.put(b.getId(), b);
-            Instant availableFrom = b.getCurrentEdge() != null
-                    ? max(b.getCurrentEdge().getFromNode().getTimeUtc(), snapshotTime)
-                    : snapshotTime;
+            String  currentIcao;
+            Instant availableFrom;
+            if (b.getCurrentEdge() instanceof FlightEdge fe) {
+                // Maleta en vuelo: llegará al nodo destino, no está en el origen
+                currentIcao   = fe.getToNode().getIcao();
+                availableFrom = max(fe.getToNode().getTimeUtc(), snapshotTime);
+            } else {
+                // Maleta esperando en aeropuerto (WaitEdge o sin arista)
+                currentIcao   = b.getCurrentAirport();
+                availableFrom = snapshotTime;
+            }
             pending.add(new BaggageState(
                     b.getId(),
-                    b.getCurrentAirport(),
+                    currentIcao,
                     availableFrom,
                     b.getDestIcao(),
                     b.getDeadlineUtc()

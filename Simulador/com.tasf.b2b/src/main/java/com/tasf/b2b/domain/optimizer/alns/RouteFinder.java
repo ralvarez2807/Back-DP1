@@ -124,6 +124,51 @@ public class RouteFinder {
         return List.of();
     }
 
+    /**
+     * Diagnóstico: ruta más rápida posible IGNORANDO el deadline (pero respetando
+     * capacidad). Sirve para saber si una maleta no rutada es infactible por horario
+     * (la llegada más temprana ya supera el deadline) o si el planificador la dejó
+     * fuera pese a existir una ruta a tiempo. Devuelve vacío si no hay ninguna ruta.
+     */
+    public static List<FlightSnapshot> findFastestIgnoringDeadline(BaggageState baggage,
+                                                                   AlnsProjection projection) {
+        int pickupMin  = projection.pickupMinutes();
+        int connectMin = projection.minConnectionMinutes();
+
+        PriorityQueue<State> pq = new PriorityQueue<>(Comparator.comparing(s -> s.time));
+        Map<String, Instant> bestArrival = new HashMap<>();
+
+        Instant startTime = baggage.availableFrom().plusSeconds(pickupMin * 60L);
+        pq.offer(new State(startTime, baggage.currentIcao(), List.of(), 0));
+
+        while (!pq.isEmpty()) {
+            State current = pq.poll();
+            if (current.hops >= MAX_HOPS) continue;
+
+            NavigableMap<Instant, List<FlightSnapshot>> byTime =
+                    projection.flightsByOrigin().get(current.icao);
+            if (byTime == null) continue;
+
+            for (Map.Entry<Instant, List<FlightSnapshot>> entry :
+                    byTime.tailMap(current.time).entrySet()) {
+                for (FlightSnapshot flight : entry.getValue()) {
+                    if (flight.remainingCapacity() <= 0) continue;
+
+                    List<FlightSnapshot> newPath = append(current.path, flight);
+                    if (flight.toIcao().equals(baggage.destIcao())) {
+                        return newPath;
+                    }
+                    Instant nextAvail = flight.arrTime().plusSeconds(connectMin * 60L);
+                    Instant prev      = bestArrival.get(flight.toIcao());
+                    if (prev != null && !nextAvail.isBefore(prev)) continue;
+                    bestArrival.put(flight.toIcao(), nextAvail);
+                    pq.offer(new State(nextAvail, flight.toIcao(), newPath, current.hops + 1));
+                }
+            }
+        }
+        return List.of();
+    }
+
     private static List<FlightSnapshot> append(List<FlightSnapshot> path, FlightSnapshot f) {
         List<FlightSnapshot> next = new ArrayList<>(path.size() + 1);
         next.addAll(path);

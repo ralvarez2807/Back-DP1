@@ -12,7 +12,8 @@ public record ShipmentView(
         int     delivered,
         int     noRoute,
         int     onTime,
-        int     late) {
+        int     late,
+        int     breached) {   // maletas sin entregar cuyo deadline ya venció
 
     public record Leg(
             String  fromIcao,

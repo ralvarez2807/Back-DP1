@@ -68,7 +68,8 @@ public class SecurityConfig {
                         .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
                         // El handshake WebSocket va autenticado por JwtHandshakeInterceptor (query param token=)
                         // Spring Security no puede leer el JWT del query param, así que se excluye aquí
-                        .requestMatchers("/api/v1/simulations/*/ws").permitAll()
+                        .requestMatchers("/api/v1/simulations/*/ws",
+                                         "/api/v1/simulations/*/ws-optimizer").permitAll()
                         .anyRequest().authenticated()
                 )
 

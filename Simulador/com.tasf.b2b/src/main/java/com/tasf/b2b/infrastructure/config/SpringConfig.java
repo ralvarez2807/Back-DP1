@@ -16,6 +16,7 @@ import com.tasf.b2b.infrastructure.persistence.repository.AirportJpaRepository;
 import com.tasf.b2b.infrastructure.persistence.repository.FlightScheduleJpaRepository;
 import com.tasf.b2b.infrastructure.persistence.repository.SimulationCancellationJpaRepository;
 import com.tasf.b2b.infrastructure.persistence.repository.SimulationShipmentJpaRepository;
+import com.tasf.b2b.presentation.websocket.InMemoryOptimizerPublisher;
 import com.tasf.b2b.presentation.websocket.InMemoryStatePublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -56,7 +57,8 @@ public class SpringConfig {
                 deliveryTypes,
                 (from, to) -> new DbSimulationShipmentFeed(shipmentRepo, airports, deliveryTypes, from, to),
                 (from, to) -> new DbSimulationCancellationFeed(cancellationRepo, from, to),
-                InMemoryStatePublisher::new
+                InMemoryStatePublisher::new,
+                InMemoryOptimizerPublisher::new
         );
     }
 

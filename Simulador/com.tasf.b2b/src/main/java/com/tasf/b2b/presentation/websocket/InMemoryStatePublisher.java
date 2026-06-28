@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.tasf.b2b.domain.simulator.StatePublisher;
 import com.tasf.b2b.domain.simulator.dto.*;
+import com.tasf.b2b.domain.simulator.dto.CollapseDetectedDTO;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -122,6 +123,7 @@ public class InMemoryStatePublisher implements StatePublisher {
             case BaggagePendingDTO   ignored -> "BAGGAGE_PENDING";
             case BaggageAssignedDTO  ignored -> "BAGGAGE_ASSIGNED";
             case ShipmentCreatedDTO  ignored -> "SHIPMENT_CREATED";
+            case CollapseDetectedDTO ignored -> "COLLAPSE_DETECTED";
         };
     }
 }

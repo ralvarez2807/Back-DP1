@@ -6,9 +6,11 @@ import com.tasf.b2b.application.dto.DashboardView;
 import com.tasf.b2b.application.dto.AirportLiveView;
 import com.tasf.b2b.application.dto.FlightView;
 import com.tasf.b2b.application.dto.ReportView;
+import com.tasf.b2b.application.dto.ShipmentDiagnosticsView;
 import com.tasf.b2b.application.dto.ShipmentView;
 import com.tasf.b2b.application.dto.SimSessionView;
 import com.tasf.b2b.application.dto.SnapshotView;
+import com.tasf.b2b.domain.simulator.dto.SlaBreachInfo;
 
 import java.util.List;
 
@@ -92,6 +94,15 @@ public interface SimulationQueryPort {
      */
     ShipmentView.DetailView getShipmentDetail(String sessionId, String shipmentId);
 
+    /**
+     * Diagnóstico forense de un envío: por cada maleta incumplida o sin ruta,
+     * reconstruye el contexto y emite un veredicto sobre por qué no se planificó
+     * (fallo del planificador vs. infactibilidad real de horario).
+     *
+     * @throws IllegalArgumentException si la sesión o el envío no existen
+     */
+    ShipmentDiagnosticsView getShipmentDiagnostics(String sessionId, String shipmentId);
+
     /** Lista de aeropuertos con carga en tiempo real y nivel de ocupación. */
     List<AirportLiveView> getAirports(String sessionId);
 
@@ -106,4 +117,10 @@ public interface SimulationQueryPort {
 
     /** Métricas finales de la simulación. */
     ReportView getReport(String sessionId);
+
+    /**
+     * Foto forense de cada incumplimiento de SLA capturada en el instante exacto
+     * en que cada maleta cruzó su deadline sin haber sido entregada.
+     */
+    List<SlaBreachInfo> getSlaBreaches(String sessionId);
 }

@@ -17,6 +17,7 @@ import com.tasf.b2b.domain.optimizer.alns.ALNSAlgorithm;
 import com.tasf.b2b.domain.optimizer.genetic.GeneticAlgorithm;
 import com.tasf.b2b.domain.simulator.SimulationClock;
 import com.tasf.b2b.domain.simulator.SimulationConfig;
+import com.tasf.b2b.domain.optimizer.metrics.OptimizerPublisher;
 import com.tasf.b2b.domain.simulator.SimulationRunner;
 import com.tasf.b2b.domain.simulator.StatePublisher;
 
@@ -64,9 +65,10 @@ public class RunSimulationUseCase implements SimulationControlPort {
      */
     public static final String DAILY_OPS_USER = "__daily_ops__";
 
-    private final SimulationRegistry          registry;
-    private final Function<String, StatePublisher> publisherFactory;
-    private final Map<String, AirportDataDTO>      airports;
+    private final SimulationRegistry               registry;
+    private final Function<String, StatePublisher>    publisherFactory;
+    private final Function<String, OptimizerPublisher> optimizerPublisherFactory;
+    private final Map<String, AirportDataDTO>          airports;
     private final List<FlightScheduleDataDTO>      flights;
     private final DeliveryTypeValues               deliveryTypes;
     private final BiFunction<Instant, Instant, ShipmentFeed>     shipmentFeedFactory;
@@ -99,14 +101,16 @@ public class RunSimulationUseCase implements SimulationControlPort {
                                 DeliveryTypeValues deliveryTypes,
                                 BiFunction<Instant, Instant, ShipmentFeed> shipmentFeedFactory,
                                 BiFunction<Instant, Instant, CancellationFeed> cancellationFeedFactory,
-                                Function<String, StatePublisher> publisherFactory) {
-        this.registry                = registry;
-        this.airports                = airports;
-        this.flights                 = flights;
-        this.deliveryTypes           = deliveryTypes;
-        this.shipmentFeedFactory     = shipmentFeedFactory;
-        this.cancellationFeedFactory = cancellationFeedFactory;
-        this.publisherFactory        = publisherFactory;
+                                Function<String, StatePublisher> publisherFactory,
+                                Function<String, OptimizerPublisher> optimizerPublisherFactory) {
+        this.registry                   = registry;
+        this.airports                   = airports;
+        this.flights                    = flights;
+        this.deliveryTypes              = deliveryTypes;
+        this.shipmentFeedFactory        = shipmentFeedFactory;
+        this.cancellationFeedFactory    = cancellationFeedFactory;
+        this.publisherFactory           = publisherFactory;
+        this.optimizerPublisherFactory  = optimizerPublisherFactory;
     }
 
     public Map<String, AirportDataDTO> getAirports() { return airports; }
@@ -154,14 +158,15 @@ public class RunSimulationUseCase implements SimulationControlPort {
         airports.values().forEach(graph::addAirport);
         flights.forEach(graph::addScheduledFlight);
 
-        // ── 3. Sesión ID + publisher por sesión ───────────────────────────────
-        String         sessionId = UUID.randomUUID().toString();
-        StatePublisher publisher = publisherFactory.apply(sessionId);
+        // ── 3. Sesión ID + publishers por sesión ──────────────────────────────
+        String            sessionId          = UUID.randomUUID().toString();
+        StatePublisher    publisher          = publisherFactory.apply(sessionId);
+        OptimizerPublisher optimizerPublisher = optimizerPublisherFactory.apply(sessionId);
 
         // ── 4. Configuración y runner ─────────────────────────────────────────
         SimulationConfig config = new SimulationConfig(
                 cmd.solverTimingMode(), cmd.optimizerMode(), speedFactor,
-                simStart, simEnd, cmd.dataSource(), 10, 10);
+                simStart, simEnd, cmd.dataSource(), 10, 10, cmd.collapseOnFailure());
         SimulationRunner runner = new SimulationRunner(graph, config, publisher);
         runner.init(); // siembra HorizonExpandEvent y SimulationEndEvent en la cola
 
@@ -179,7 +184,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 : EMPTY_CANCELLATION_FEED;
 
         // ── 6. Sesión ─────────────────────────────────────────────────────────
-        SimulationSession session = new SimulationSession(sessionId, cmd.username(), runner, graph, config, publisher);
+        SimulationSession session = new SimulationSession(sessionId, cmd.username(), runner, graph, config, publisher, optimizerPublisher);
 
         // ── 7. Hilo del runner (no-daemon) ────────────────────────────────────
         // Es el único hilo no-daemon: la JVM espera a que termine.
@@ -210,7 +215,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
         // ── 9. Hilos de optimización (daemon) ─────────────────────────────────
         // isActive=true → el hilo envía RouteSolutionEvent al runner (afecta la simulación)
         // isActive=false → solo evalúa métricas, no modifica nada (modo comparación)
-        List<Thread> optimizerThreads = buildOptimizerThreads(runner, clock, config, sessionId);
+        List<Thread> optimizerThreads = buildOptimizerThreads(runner, clock, config, sessionId, optimizerPublisher);
         optimizerThreads.forEach(t -> t.setDaemon(true));
 
         // ── 10. Registrar todos los hilos en la sesión para poder pararlos ────
@@ -262,7 +267,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 SimulationConfig.DataSource.DB,
                 SimulationConfig.SolverTimingMode.REAL_TIME,
                 SimulationConfig.OptimizerMode.ALNS_ONLY,
-                simStart, simEnd, speedFactor);
+                simStart, simEnd, speedFactor, false);
         // Sin feeds simulados: la operación en vivo solo refleja órdenes reales.
         return startSession(cmd, false);
     }
@@ -464,12 +469,13 @@ public class RunSimulationUseCase implements SimulationControlPort {
     private List<Thread> buildOptimizerThreads(SimulationRunner runner,
                                                SimulationClock clock,
                                                SimulationConfig config,
-                                               String sessionId) {
+                                               String sessionId,
+                                               OptimizerPublisher optimizerPublisher) {
         List<Thread> threads = new ArrayList<>();
         switch (config.optimizerMode()) {
             case ALNS_ONLY ->
                 threads.add(new Thread(
-                        new AlnsThread(runner, new ALNSAlgorithm(), clock, config, true),
+                        new AlnsThread(runner, new ALNSAlgorithm(), clock, config, true, optimizerPublisher),
                         "alns-" + sessionId));
             case GENETIC_ONLY ->
                 threads.add(new Thread(
@@ -478,7 +484,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
             case ALNS_ACTIVE_GENETIC_EVAL -> {
                 // ALNS activo: sus rutas se aplican al grafo
                 threads.add(new Thread(
-                        new AlnsThread(runner, new ALNSAlgorithm(), clock, config, true),
+                        new AlnsThread(runner, new ALNSAlgorithm(), clock, config, true, optimizerPublisher),
                         "alns-" + sessionId));
                 // Genético en evaluación: corre en paralelo pero no aplica sus rutas
                 threads.add(new Thread(
@@ -490,7 +496,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
                         new GeneticThread(runner, new GeneticAlgorithm(), clock, true),
                         "genetic-" + sessionId));
                 threads.add(new Thread(
-                        new AlnsThread(runner, new ALNSAlgorithm(), clock, config, false),
+                        new AlnsThread(runner, new ALNSAlgorithm(), clock, config, false, optimizerPublisher),
                         "alns-eval-" + sessionId));
             }
         }

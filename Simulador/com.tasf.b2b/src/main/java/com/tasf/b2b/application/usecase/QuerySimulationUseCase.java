@@ -6,6 +6,7 @@ import com.tasf.b2b.application.dto.DashboardView;
 import com.tasf.b2b.application.dto.AirportLiveView;
 import com.tasf.b2b.application.dto.FlightView;
 import com.tasf.b2b.application.dto.ReportView;
+import com.tasf.b2b.application.dto.ShipmentDiagnosticsView;
 import com.tasf.b2b.application.dto.ShipmentView;
 import com.tasf.b2b.application.dto.SimSessionView;
 import com.tasf.b2b.application.dto.SnapshotView;
@@ -15,6 +16,11 @@ import com.tasf.b2b.application.port.in.SimulationQueryPort;
 import com.tasf.b2b.domain.model.graph.SpaceTimeGraph;
 import com.tasf.b2b.domain.model.graph.componentsgraph.FlightEdge;
 import com.tasf.b2b.domain.model.graph.movable.Baggage;
+import com.tasf.b2b.domain.optimizer.alns.AlnsProjection;
+import com.tasf.b2b.domain.optimizer.alns.AlnsProjectionBuilder;
+import com.tasf.b2b.domain.optimizer.alns.BaggageState;
+import com.tasf.b2b.domain.optimizer.alns.FlightSnapshot;
+import com.tasf.b2b.domain.optimizer.alns.RouteFinder;
 import com.tasf.b2b.domain.simulator.SimulationClock;
 import com.tasf.b2b.domain.simulator.SimulationRunner;
 
@@ -427,6 +433,8 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         SimulationSession session = registry.findOrThrow(sessionId);
         SimulationRunner  runner  = session.getRunner();
         SpaceTimeGraph    graph   = session.getGraph();
+        int     pickupMinutes = runner.getConfig().pickupMinutes();
+        Instant simNow        = runner.getClock().now();
 
         Map<String, List<Baggage>> activeByShipment    = new LinkedHashMap<>();
         Map<String, List<Baggage>> deliveredByShipment = new LinkedHashMap<>();
@@ -457,11 +465,17 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
             List<Baggage> delivered = deliveredByShipment.getOrDefault(sid, List.of());
             Baggage sample = active.isEmpty() ? delivered.get(0) : active.get(0);
 
-            int noRoute = 0, onTime = 0, late = 0;
+            int noRoute = 0, onTime = 0, late = 0, breached = 0;
             for (Baggage b : active) {
+                // Vencida sin entregar: sigue activa (no entregada) y su deadline ya pasó.
+                // Es el proxy en vivo de "no entregada"; al fin de la simulación son los fallos.
+                if (b.getDeadlineUtc() != null && b.getDeadlineUtc().isBefore(simNow)) breached++;
+
                 if (b.isRouteComplete()) {
-                    Instant eta = b.getExpectedDestEdge().getToNode().getTimeUtc();
-                    if (!eta.isAfter(b.getDeadlineUtc())) onTime++;
+                    // Entrega planificada = llegada del último tramo + recogida.
+                    Instant delivery = b.getExpectedDestEdge().getToNode().getTimeUtc()
+                            .plus(Duration.ofMinutes(pickupMinutes));
+                    if (!delivery.isAfter(b.getDeadlineUtc())) onTime++;
                     else late++;
                 } else {
                     noRoute++;
@@ -475,7 +489,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                     sample.getDeadlineUtc(),
                     active.size() + delivered.size(),
                     delivered.size(),
-                    noRoute, onTime, late));
+                    noRoute, onTime, late, breached));
         }
         return result;
     }
@@ -508,9 +522,10 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         Set<String> deliveredIds = delivered.stream()
                 .map(Baggage::getId).collect(Collectors.toSet());
 
+        int pickupMinutes = runner.getConfig().pickupMinutes();
         Baggage sample = all.get(0);
         List<ShipmentView.BaggageDetail> details = all.stream()
-                .map(b -> toBaggageDetail(b, deliveredIds.contains(b.getId())))
+                .map(b -> toBaggageDetail(b, deliveredIds.contains(b.getId()), pickupMinutes))
                 .collect(Collectors.toList());
 
         return new ShipmentView.DetailView(
@@ -522,7 +537,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 details);
     }
 
-    private ShipmentView.BaggageDetail toBaggageDetail(Baggage b, boolean isDelivered) {
+    private ShipmentView.BaggageDetail toBaggageDetail(Baggage b, boolean isDelivered, int pickupMinutes) {
         if (isDelivered) {
             return new ShipmentView.BaggageDetail(
                     b.getId(), "DELIVERED", b.getDestIcao(), null, null, List.of());
@@ -540,8 +555,11 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         Instant eta    = null;
         Boolean onTime = null;
         if (b.isRouteComplete()) {
+            // eta expuesta = llegada del último tramo; el cumplimiento de SLA se mide
+            // sobre la entrega real (llegada + recogida) para coincidir con el dashboard.
             eta    = b.getExpectedDestEdge().getToNode().getTimeUtc();
-            onTime = !eta.isAfter(b.getDeadlineUtc());
+            Instant delivery = eta.plus(Duration.ofMinutes(pickupMinutes));
+            onTime = !delivery.isAfter(b.getDeadlineUtc());
         }
 
         // Tramos recorridos
@@ -567,6 +585,128 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
 
         return new ShipmentView.BaggageDetail(
                 b.getId(), status, b.getCurrentAirport(), eta, onTime, legs);
+    }
+
+    // ── getShipmentDiagnostics ────────────────────────────────────────────────
+
+    @Override
+    public ShipmentDiagnosticsView getShipmentDiagnostics(String sessionId, String shipmentId) {
+        SimulationSession session = registry.findOrThrow(sessionId);
+        SimulationRunner  runner  = session.getRunner();
+        SpaceTimeGraph    graph   = session.getGraph();
+        Instant simNow         = runner.getClock().now();
+        int     pickupMinutes  = runner.getConfig().pickupMinutes();
+        int     connectMinutes = runner.getConfig().minConnectionMinutes();
+
+        List<Baggage> active = new ArrayList<>();
+        active.addAll(new ArrayList<>(graph.getPendingBaggages()));
+        active.addAll(new ArrayList<>(graph.getAssignedBaggages()));
+        active = active.stream()
+                .filter(b -> b.getShipment().getShipmentData().getId().equals(shipmentId))
+                .collect(Collectors.toList());
+        List<Baggage> delivered = runner.getDeliveredBaggages().stream()
+                .filter(b -> b.getShipment().getShipmentData().getId().equals(shipmentId))
+                .collect(Collectors.toList());
+
+        if (active.isEmpty() && delivered.isEmpty())
+            throw new IllegalArgumentException("Envío no encontrado: " + shipmentId);
+
+        Baggage sample    = active.isEmpty() ? delivered.get(0) : active.get(0);
+        String  originIcao = sample.getShipment().getShipmentData().getOriginAirport().getIcao();
+        String  destIcao   = sample.getDestIcao();
+        Instant deadline   = sample.getDeadlineUtc();
+
+        // Mismo snapshot del grafo que ve el ALNS en cada ciclo.
+        AlnsProjection projection = AlnsProjectionBuilder.build(graph, simNow, connectMinutes, pickupMinutes);
+
+        List<ShipmentDiagnosticsView.BaggageDiagnostic> diags = new ArrayList<>();
+
+        // Entregadas pero tarde
+        for (Baggage b : delivered) {
+            Instant deliveredAt = actualDeliveryInstant(b, pickupMinutes);
+            if (deliveredAt != null && b.getDeadlineUtc() != null && deliveredAt.isAfter(b.getDeadlineUtc())) {
+                long lateMin = Duration.between(b.getDeadlineUtc(), deliveredAt).toMinutes();
+                diags.add(new ShipmentDiagnosticsView.BaggageDiagnostic(
+                        b.getId(), "DELIVERED", b.getDestIcao(), deliveredAt,
+                        Duration.between(simNow, b.getDeadlineUtc()).toMinutes(),
+                        true, false, deliveredAt, lateMin, b.getRouteTraveled().size(),
+                        ShipmentDiagnosticsView.VERDICT_DELIVERED_LATE,
+                        "Entregada " + lateMin + " min tarde.", List.of()));
+            }
+        }
+
+        // Activas problemáticas: sin ruta completa o ya vencidas
+        for (Baggage b : active) {
+            boolean past = b.getDeadlineUtc() != null && b.getDeadlineUtc().isBefore(simNow);
+            if (b.isRouteComplete() && !past) continue;
+
+            String  status; String currentIcao; Instant availableFrom;
+            if (b.getCurrentEdge() instanceof FlightEdge fe) {
+                status = "IN_FLIGHT";
+                currentIcao   = fe.getToNode().getIcao();
+                availableFrom = fe.getToNode().getTimeUtc().isAfter(simNow) ? fe.getToNode().getTimeUtc() : simNow;
+            } else if (b.isUnassigned()) {
+                status = "PENDING"; currentIcao = b.getCurrentAirport(); availableFrom = simNow;
+            } else {
+                status = "WAITING"; currentIcao = b.getCurrentAirport(); availableFrom = simNow;
+            }
+
+            BaggageState bs = new BaggageState(b.getId(), currentIcao, availableFrom, destIcao, b.getDeadlineUtc());
+            List<FlightSnapshot> best = RouteFinder.findFastestIgnoringDeadline(bs, projection);
+
+            boolean reachable; Instant bestArr; long bestLate; int hops; String verdict; String expl;
+            if (best.isEmpty()) {
+                reachable = false; bestArr = null; bestLate = 0; hops = 0;
+                verdict = ShipmentDiagnosticsView.VERDICT_NO_CONNECTIVITY;
+                expl = "No existe NINGUNA cadena de vuelos desde " + currentIcao + " hacia " + destIcao
+                     + " en el horizonte (ni ignorando el deadline). Falta conectividad o capacidad.";
+            } else {
+                bestArr  = best.get(best.size() - 1).arrTime();
+                hops     = best.size();
+                reachable = b.getDeadlineUtc() == null || !bestArr.isAfter(b.getDeadlineUtc());
+                bestLate  = b.getDeadlineUtc() == null ? 0 : Duration.between(b.getDeadlineUtc(), bestArr).toMinutes();
+                if (!reachable) {
+                    verdict = ShipmentDiagnosticsView.VERDICT_DEADLINE_INFEASIBLE;
+                    expl = "La ruta más rápida posible (" + hops + " vuelo[s]) llega " + bestLate
+                         + " min DESPUÉS del deadline. Es físicamente imposible cumplir el SLA desde aquí; "
+                         + "el fallo ocurrió antes (se posicionó tarde o perdió una conexión).";
+                } else if (!b.isRouteComplete()) {
+                    verdict = ShipmentDiagnosticsView.VERDICT_PLANNER_MISS;
+                    expl = "SÍ existe una ruta que llega a tiempo (" + hops + " vuelo[s], holgura "
+                         + (-bestLate) + " min) pero quedó SIN RUTA. Revisar el optimizador.";
+                } else {
+                    verdict = ShipmentDiagnosticsView.VERDICT_ON_TRACK;
+                    expl = "Tiene ruta que llega a tiempo; aparece como vencida solo porque su deadline pasó estando en tránsito.";
+                }
+            }
+
+            List<ShipmentDiagnosticsView.DirectFlightInfo> directs = new ArrayList<>();
+            var byTime = projection.flightsByOrigin().get(currentIcao);
+            if (byTime != null) {
+                for (var bucket : byTime.values()) {
+                    for (FlightSnapshot f : bucket) {
+                        if (!f.toIcao().equals(destIcao)) continue;
+                        boolean depOk = !f.depTime().isBefore(availableFrom.plusSeconds(pickupMinutes * 60L));
+                        boolean arrOk = b.getDeadlineUtc() == null || !f.arrTime().isAfter(b.getDeadlineUtc());
+                        boolean capOk = f.remainingCapacity() > 0;
+                        boolean usable = depOk && arrOk && capOk;
+                        String reason = usable ? "Usable"
+                                : !depOk ? "Sale antes de que la maleta esté lista"
+                                : !capOk ? "Sin capacidad"
+                                : "Llega después del deadline";
+                        directs.add(new ShipmentDiagnosticsView.DirectFlightInfo(
+                                f.flightId(), f.depTime(), f.arrTime(), f.remainingCapacity(), usable, reason));
+                    }
+                }
+            }
+
+            diags.add(new ShipmentDiagnosticsView.BaggageDiagnostic(
+                    b.getId(), status, currentIcao, availableFrom,
+                    b.getDeadlineUtc() == null ? 0 : Duration.between(simNow, b.getDeadlineUtc()).toMinutes(),
+                    b.isRouteComplete(), reachable, bestArr, bestLate, hops, verdict, expl, directs));
+        }
+
+        return new ShipmentDiagnosticsView(shipmentId, originIcao, destIcao, deadline, simNow, diags);
     }
 
     // ── getAirports ───────────────────────────────────────────────────────────
@@ -785,6 +925,12 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 topRoutes);
     }
 
+    @Override
+    public List<com.tasf.b2b.domain.simulator.dto.SlaBreachInfo> getSlaBreaches(String sessionId) {
+        SimulationSession session = registry.findOrThrow(sessionId);
+        return session.getRunner().getSlaBreaches();
+    }
+
     private void requireAirport(SpaceTimeGraph graph, String icao) {
         if (graph.getAirport(icao) == null)
             throw new IllegalArgumentException("Aeropuerto no encontrado: " + icao);
@@ -817,17 +963,38 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
 
     private int countSlaBreaches(SimulationRunner runner, SpaceTimeGraph graph, Instant simNow) {
         int breaches = 0;
+        int pickupMinutes = runner.getConfig().pickupMinutes();
 
+        // Maletas aún no entregadas: hay breach si su deadline ya pasó (no se podrá
+        // entregar antes de una fecha que ya quedó atrás).
         List<Baggage> activeSla = new ArrayList<>();
         activeSla.addAll(new ArrayList<>(graph.getPendingBaggages()));
         activeSla.addAll(new ArrayList<>(graph.getAssignedBaggages()));
         for (Baggage b : activeSla) {
             if (b.getDeadlineUtc() != null && b.getDeadlineUtc().isBefore(simNow)) breaches++;
         }
-        // Baggages entregados — aunque llegaron tarde también cuentan como breach
+        // Maletas entregadas: hay breach SOLO si la entrega REAL (llegada al destino +
+        // minutos de recogida, igual que BaggagePickupEvent) superó el deadline.
+        // OJO: comparar el deadline contra simNow estaba mal — contaba como vencida
+        // cualquier maleta entregada a tiempo en cuanto el reloj simulado pasaba su
+        // deadline, inflando el contador hasta ≈ "entregadas con deadline ya cumplido".
         for (Baggage b : runner.getDeliveredBaggages()) {
-            if (b.getDeadlineUtc() != null && b.getDeadlineUtc().isBefore(simNow)) breaches++;
+            if (b.getDeadlineUtc() == null) continue;
+            Instant deliveredAt = actualDeliveryInstant(b, pickupMinutes);
+            if (deliveredAt != null && deliveredAt.isAfter(b.getDeadlineUtc())) breaches++;
         }
         return breaches;
+    }
+
+    // Hora real en que se entregó la maleta: llegada del último vuelo recorrido al
+    // destino + minutos de recogida. Refleja el momento del BaggagePickupEvent.
+    private static Instant actualDeliveryInstant(Baggage b, int pickupMinutes) {
+        List<STEdge> traveled = b.getRouteTraveled();
+        for (int i = traveled.size() - 1; i >= 0; i--) {
+            if (traveled.get(i) instanceof FlightEdge fe) {
+                return fe.getToNode().getTimeUtc().plus(Duration.ofMinutes(pickupMinutes));
+            }
+        }
+        return null;
     }
 }

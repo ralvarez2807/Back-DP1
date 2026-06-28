@@ -61,22 +61,37 @@ public class BaggageSolution {
     }
 
     /**
-     * 1000 por baggage sin ruta + Σ max(0, arrTime − deadline) en horas.
-     * Penaliza fuerte no llegar y suave llegar tarde.
+     * Objetivo lexicográfico en un solo double. Score menor = mejor.
+     *
+     * Primario:   unrouted.size() × 2.0   (cada maleta sin ruta penaliza +2)
+     * Secundario: promedio de (1-ratio_i) sobre maletas rutadas  ∈ [0, 1]
+     *
+     * Como el máximo costo de una maleta rutada es 1.0 (llega exactamente al deadline —
+     * RouteFinder descarta llegadas tardías), la penalidad 2.0 garantiza que CUALQUIER
+     * solución con K sin ruta sea peor que CUALQUIER solución con K-1 sin ruta,
+     * sin importar cuán buenas sean el resto:
+     *   K × 2.0  >  (K-1) × 2.0 + 1.0   ⟺   0 > -1  ✓
+     *
+     * ratio_i = (deadline - arrTime) / (deadline - availableFrom)
      */
-    public double score() {
-        double penalty = unrouted.size() * 1000.0;
+    public double score(Instant horizonMax) {
+        if (routes.isEmpty() && unrouted.isEmpty()) return 0.0;
+        double routedCost = 0.0;
         for (Map.Entry<BaggageState, List<FlightSnapshot>> e : routes.entrySet()) {
+            BaggageState bs = e.getKey();
             List<FlightSnapshot> route = e.getValue();
-            if (route.isEmpty()) continue;
-            Instant arrTime  = route.getLast().arrTime();
-            Instant deadline = e.getKey().deadline();
-            long lateSeconds = Duration.between(deadline, arrTime).toSeconds();
-            if (lateSeconds > 0) {
-                penalty += lateSeconds / 3600.0;
-            }
+            Instant arrTime = route.isEmpty() ? horizonMax : route.getLast().arrTime();
+            routedCost += (1.0 - ratio(bs, arrTime));
         }
-        return penalty;
+        double routedAvg = routes.isEmpty() ? 0.0 : routedCost / routes.size();
+        return unrouted.size() * 2.0 + routedAvg;
+    }
+
+    private double ratio(BaggageState bs, Instant arrTime) {
+        long window = Duration.between(bs.availableFrom(), bs.deadline()).toSeconds();
+        if (window <= 0) return 0.0;
+        long margin = Duration.between(arrTime, bs.deadline()).toSeconds();
+        return (double) margin / window;
     }
 
     public BaggageSolution deepCopy() {
@@ -91,7 +106,7 @@ public class BaggageSolution {
      * Convierte al resultado que el runner espera.
      * Usa las referencias vivas de la proyección solo en este paso final.
      */
-    public SolutionResult toSolutionResult(AlnsProjection projection) {
+    public SolutionResult toSolutionResult(AlnsProjection projection, Instant horizonMax) {
         Map<Baggage, List<STEdge>> result = new LinkedHashMap<>();
         for (Map.Entry<BaggageState, List<FlightSnapshot>> e : routes.entrySet()) {
             Baggage liveBaggage = projection.baggageById().get(e.getKey().baggageId());
@@ -106,7 +121,7 @@ public class BaggageSolution {
             }
         }
         boolean partial = !unrouted.isEmpty();
-        return new SolutionResult(result, partial, projection.snapshotTime(), unrouted.size(), score());
+        return new SolutionResult(result, partial, projection.snapshotTime(), unrouted.size(), score(horizonMax));
     }
 
     // ── Accessors for operators ───────────────────────────────────────────────

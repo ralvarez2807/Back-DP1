@@ -14,7 +14,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *   @ComponentScan     → escanea el paquete com.tasf.b2b y sus subpaquetes
  *                         buscando @Component, @Service, @RestController, etc.
  *
- * SimulationMain sigue existiendo para pruebas manuales rápidas sin Spring.
+ * SimulationMain sigue existiendo para pruebas ma
+ * nuales rápidas sin Spring.
  * Esta clase es el punto de entrada cuando se quiere levantar la API REST.
  */
 @SpringBootApplication

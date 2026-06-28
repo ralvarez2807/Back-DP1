@@ -427,6 +427,8 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         SimulationSession session = registry.findOrThrow(sessionId);
         SimulationRunner  runner  = session.getRunner();
         SpaceTimeGraph    graph   = session.getGraph();
+        int     pickupMinutes = runner.getConfig().pickupMinutes();
+        Instant simNow        = runner.getClock().now();
 
         Map<String, List<Baggage>> activeByShipment    = new LinkedHashMap<>();
         Map<String, List<Baggage>> deliveredByShipment = new LinkedHashMap<>();
@@ -457,11 +459,17 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
             List<Baggage> delivered = deliveredByShipment.getOrDefault(sid, List.of());
             Baggage sample = active.isEmpty() ? delivered.get(0) : active.get(0);
 
-            int noRoute = 0, onTime = 0, late = 0;
+            int noRoute = 0, onTime = 0, late = 0, breached = 0;
             for (Baggage b : active) {
+                // Vencida sin entregar: sigue activa (no entregada) y su deadline ya pasó.
+                // Es el proxy en vivo de "no entregada"; al fin de la simulación son los fallos.
+                if (b.getDeadlineUtc() != null && b.getDeadlineUtc().isBefore(simNow)) breached++;
+
                 if (b.isRouteComplete()) {
-                    Instant eta = b.getExpectedDestEdge().getToNode().getTimeUtc();
-                    if (!eta.isAfter(b.getDeadlineUtc())) onTime++;
+                    // Entrega planificada = llegada del último tramo + recogida.
+                    Instant delivery = b.getExpectedDestEdge().getToNode().getTimeUtc()
+                            .plus(Duration.ofMinutes(pickupMinutes));
+                    if (!delivery.isAfter(b.getDeadlineUtc())) onTime++;
                     else late++;
                 } else {
                     noRoute++;
@@ -475,7 +483,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                     sample.getDeadlineUtc(),
                     active.size() + delivered.size(),
                     delivered.size(),
-                    noRoute, onTime, late));
+                    noRoute, onTime, late, breached));
         }
         return result;
     }
@@ -508,9 +516,10 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         Set<String> deliveredIds = delivered.stream()
                 .map(Baggage::getId).collect(Collectors.toSet());
 
+        int pickupMinutes = runner.getConfig().pickupMinutes();
         Baggage sample = all.get(0);
         List<ShipmentView.BaggageDetail> details = all.stream()
-                .map(b -> toBaggageDetail(b, deliveredIds.contains(b.getId())))
+                .map(b -> toBaggageDetail(b, deliveredIds.contains(b.getId()), pickupMinutes))
                 .collect(Collectors.toList());
 
         return new ShipmentView.DetailView(
@@ -522,7 +531,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 details);
     }
 
-    private ShipmentView.BaggageDetail toBaggageDetail(Baggage b, boolean isDelivered) {
+    private ShipmentView.BaggageDetail toBaggageDetail(Baggage b, boolean isDelivered, int pickupMinutes) {
         if (isDelivered) {
             return new ShipmentView.BaggageDetail(
                     b.getId(), "DELIVERED", b.getDestIcao(), null, null, List.of());
@@ -540,8 +549,11 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         Instant eta    = null;
         Boolean onTime = null;
         if (b.isRouteComplete()) {
+            // eta expuesta = llegada del último tramo; el cumplimiento de SLA se mide
+            // sobre la entrega real (llegada + recogida) para coincidir con el dashboard.
             eta    = b.getExpectedDestEdge().getToNode().getTimeUtc();
-            onTime = !eta.isAfter(b.getDeadlineUtc());
+            Instant delivery = eta.plus(Duration.ofMinutes(pickupMinutes));
+            onTime = !delivery.isAfter(b.getDeadlineUtc());
         }
 
         // Tramos recorridos
@@ -817,17 +829,38 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
 
     private int countSlaBreaches(SimulationRunner runner, SpaceTimeGraph graph, Instant simNow) {
         int breaches = 0;
+        int pickupMinutes = runner.getConfig().pickupMinutes();
 
+        // Maletas aún no entregadas: hay breach si su deadline ya pasó (no se podrá
+        // entregar antes de una fecha que ya quedó atrás).
         List<Baggage> activeSla = new ArrayList<>();
         activeSla.addAll(new ArrayList<>(graph.getPendingBaggages()));
         activeSla.addAll(new ArrayList<>(graph.getAssignedBaggages()));
         for (Baggage b : activeSla) {
             if (b.getDeadlineUtc() != null && b.getDeadlineUtc().isBefore(simNow)) breaches++;
         }
-        // Baggages entregados — aunque llegaron tarde también cuentan como breach
+        // Maletas entregadas: hay breach SOLO si la entrega REAL (llegada al destino +
+        // minutos de recogida, igual que BaggagePickupEvent) superó el deadline.
+        // OJO: comparar el deadline contra simNow estaba mal — contaba como vencida
+        // cualquier maleta entregada a tiempo en cuanto el reloj simulado pasaba su
+        // deadline, inflando el contador hasta ≈ "entregadas con deadline ya cumplido".
         for (Baggage b : runner.getDeliveredBaggages()) {
-            if (b.getDeadlineUtc() != null && b.getDeadlineUtc().isBefore(simNow)) breaches++;
+            if (b.getDeadlineUtc() == null) continue;
+            Instant deliveredAt = actualDeliveryInstant(b, pickupMinutes);
+            if (deliveredAt != null && deliveredAt.isAfter(b.getDeadlineUtc())) breaches++;
         }
         return breaches;
+    }
+
+    // Hora real en que se entregó la maleta: llegada del último vuelo recorrido al
+    // destino + minutos de recogida. Refleja el momento del BaggagePickupEvent.
+    private static Instant actualDeliveryInstant(Baggage b, int pickupMinutes) {
+        List<STEdge> traveled = b.getRouteTraveled();
+        for (int i = traveled.size() - 1; i >= 0; i--) {
+            if (traveled.get(i) instanceof FlightEdge fe) {
+                return fe.getToNode().getTimeUtc().plus(Duration.ofMinutes(pickupMinutes));
+            }
+        }
+        return null;
     }
 }

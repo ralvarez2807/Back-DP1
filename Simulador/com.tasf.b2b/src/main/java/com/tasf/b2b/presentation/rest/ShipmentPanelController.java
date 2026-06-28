@@ -28,12 +28,13 @@ public class ShipmentPanelController {
             int     delivered,
             int     noRoute,
             int     onTime,
-            int     late) {
+            int     late,
+            int     breached) {
 
         static ShipmentListItem from(ShipmentView v) {
             return new ShipmentListItem(v.shipmentId(), v.originIcao(), v.destIcao(),
                     v.deadlineUtc(), v.totalBaggages(), v.delivered(),
-                    v.noRoute(), v.onTime(), v.late());
+                    v.noRoute(), v.onTime(), v.late(), v.breached());
         }
     }
 

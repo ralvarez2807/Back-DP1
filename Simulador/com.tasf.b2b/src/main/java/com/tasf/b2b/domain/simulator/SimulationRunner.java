@@ -184,6 +184,7 @@ public class SimulationRunner implements Runnable {
             arrivedCount++;
 
             baggage.confirmNextEdge();
+            fe.release(); // libera la carga que assignBaggage reservó para este vuelo
 
             if (fe.getToNode().getIcao().equals(baggage.getDestIcao())) {
                 graph.getAssignedBaggages().remove(baggage);

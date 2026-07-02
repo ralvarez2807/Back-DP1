@@ -286,7 +286,8 @@ Todos los campos son obligatorios. No hay valores por defecto.
   "optimizerMode":    "ALNS_ONLY",
   "simStart":         "2026-01-02T00:00:00Z",
   "simEnd":           "2026-01-07T00:00:00Z",
-  "speedFactor":      480.0
+  "speedFactor":      480.0,
+  "collapseOnFailure": true
 }
 ```
 
@@ -298,7 +299,8 @@ Todos los campos son obligatorios. No hay valores por defecto.
   "optimizerMode":    "ALNS_ONLY",
   "simStart":         null,
   "simEnd":           null,
-  "speedFactor":      null
+  "speedFactor":      null,
+  "collapseOnFailure": null
 }
 ```
 
@@ -310,6 +312,9 @@ Todos los campos son obligatorios. No hay valores por defecto.
 | `simStart` | ISO-8601 UTC | solo DB |
 | `simEnd` | ISO-8601 UTC | solo DB |
 | `speedFactor` | número > 0 | solo DB |
+| `collapseOnFailure` | boolean, default `false` si se omite | no |
+
+`collapseOnFailure` habilita la detección de colapso del optimizador: si el ALNS falla repetidamente en rutear una maleta (deadline superado o sin ruta viable), se emite `COLLAPSE_DETECTED` por el WS `/ws` y el detalle completo (`COLLAPSE_DETAIL`) por el WS `/ws-optimizer`.
 
 > Si se solicita una combinación no implementada, el servidor devuelve `501 Not Implemented` con el mensaje de error.  
 > Implementado: `DB + REAL_TIME + ALNS_ONLY`.
@@ -956,6 +961,28 @@ Solo recibe — el cliente no envía. Push desde `InMemoryStatePublisher`.
 | `BAGGAGE_PENDING` | `{ baggageId, currentIcao }` |
 | `BAGGAGE_ASSIGNED` | `{ baggageId, route: [flightId, ...] }` |
 | `SHIPMENT_CREATED` | `{ shipmentId, baggageIds: [...], originIcao, destIcao, deadlineUtc }` |
-| `SIM_STATUS` | `{ status }` |
+| `COLLAPSE_DETECTED` | `{ reason: DEADLINE_EXCEEDED\|NO_VIABLE_ROUTE, baggageId, deadline, consecutiveCycles }` |
 
 Reconexión: el servidor no tiene replay — los eventos perdidos no se recuperan. Usar `GET /simulations/:id/snapshot` para re-sincronizar el estado completo tras reconectar.
+
+---
+
+## 14. WebSocket — métricas del optimizador
+
+`ws://localhost:8080/api/v1/simulations/:id/ws-optimizer`  
+Header: `Authorization: Bearer <token>`
+
+Canal separado del `/ws` principal, exclusivo para métricas del optimizador (ALNS). Solo recibe — el cliente no envía. Push desde `InMemoryOptimizerPublisher`.
+
+```json
+{ "seq": 12, "type": "ALGORITHM_RUN", "simTime": "2026-01-03T10:00:00Z", "payload": {} }
+```
+
+`seq` es un entero incremental por sesión (arranca en 0), independiente del `seq` del WS `/ws`.
+
+| type | payload |
+|------|---------|
+| `ALGORITHM_RUN` | `{ runNumber, executionMs, routedCount, unroutedCount, score, avgScore }` — se emite en cada ejecución del optimizador |
+| `COLLAPSE_DETAIL` | `{ reason: DEADLINE_EXCEEDED\|NO_VIABLE_ROUTE, consecutiveCycles, unroutedBaggages: [{ baggageId, originIcao, destIcao, availableFrom, deadline, minutesOverDeadline }] }` — detalle completo al detectarse un colapso (solo si `collapseOnFailure: true` en `POST /simulations`) |
+
+`minutesOverDeadline` > 0 si la maleta ya superó su deadline; `0` si aún no lo superó pero el optimizador no encontró ninguna ruta viable.

@@ -30,12 +30,9 @@ import java.util.List;
  */
 public class AlnsThread implements Runnable {
 
-    private static final long POLL_MS             = 200;
-    // Intervalo mínimo entre ejecuciones del planificador, medido en tiempo simulado.
-    // El hilo duerme el equivalente real: 5min_sim / speedFactor.
-    private static final long SIM_INTERVAL_SECONDS = 5 * 60;
-    private static final long MIN_SLEEP_MS          = 200;
-    private static final long MAX_SLEEP_MS          = 5 * 60 * 1000; // tope: 5 min reales
+    // Poll base a speedFactor=1; se achica proporcionalmente en sesiones más rápidas.
+    private static final long BASE_POLL_MS = 200;
+    private static final long MIN_POLL_MS  = 10;
 
     private final SimulationRunner  runner;
     private final RoutingOptimizer  optimizer;
@@ -68,7 +65,7 @@ public class AlnsThread implements Runnable {
                 SpaceTimeGraph graph = runner.getGraph();
 
                 if (graph.getPendingBaggages().isEmpty()) {
-                    Thread.sleep(POLL_MS);
+                    Thread.sleep(pollMs());
                     continue;
                 }
 
@@ -112,16 +109,22 @@ public class AlnsThread implements Runnable {
                             clock));
                 }
 
-                // Dormir el equivalente real de SIM_INTERVAL_SECONDS de tiempo simulado.
-                // Ej: speedFactor=1 → 300s reales; speedFactor=100 → 3s reales.
-                long realSleepMs = (long)(SIM_INTERVAL_SECONDS * 1000.0 / config.speedFactor());
-                realSleepMs = Math.max(MIN_SLEEP_MS, Math.min(realSleepMs, MAX_SLEEP_MS));
-                Thread.sleep(realSleepMs);
+                // Si ya hay más trabajo pendiente (llegó durante el solve), reoptimiza
+                // de inmediato; si no, duerme antes de volver a chequear.
+                if (graph.getPendingBaggages().isEmpty()) {
+                    Thread.sleep(pollMs());
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
             }
         }
+    }
+
+    /** Poll proporcional a speedFactor: sesiones más rápidas chequean más seguido. */
+    private long pollMs() {
+        long scaled = (long) (BASE_POLL_MS / config.speedFactor());
+        return Math.max(MIN_POLL_MS, scaled);
     }
 
     private void publishCollapseDetail(CollapseDetector.CollapseInfo info, java.time.Instant snapshotTime) {

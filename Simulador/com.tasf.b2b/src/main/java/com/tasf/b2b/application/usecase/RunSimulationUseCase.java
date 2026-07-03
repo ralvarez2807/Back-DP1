@@ -1,5 +1,6 @@
 package com.tasf.b2b.application.usecase;
 
+import com.tasf.b2b.application.dto.FinishedSessionView;
 import com.tasf.b2b.application.port.in.DisruptionCommand;
 import com.tasf.b2b.application.port.in.InjectShipmentCommand;
 import com.tasf.b2b.application.port.in.InjectShipmentResult;
@@ -73,6 +74,8 @@ public class RunSimulationUseCase implements SimulationControlPort {
     private final DeliveryTypeValues               deliveryTypes;
     private final BiFunction<Instant, Instant, ShipmentFeed>     shipmentFeedFactory;
     private final BiFunction<Instant, Instant, CancellationFeed> cancellationFeedFactory;
+    private final QuerySimulationUseCase           query;
+    private final FinishedSessionCache             finishedSessionCache;
 
     /** Secuencia para los ids de envíos cargados manualmente (operario). */
     private final AtomicLong manualShipmentSeq = new AtomicLong(0);
@@ -102,7 +105,9 @@ public class RunSimulationUseCase implements SimulationControlPort {
                                 BiFunction<Instant, Instant, ShipmentFeed> shipmentFeedFactory,
                                 BiFunction<Instant, Instant, CancellationFeed> cancellationFeedFactory,
                                 Function<String, StatePublisher> publisherFactory,
-                                Function<String, OptimizerPublisher> optimizerPublisherFactory) {
+                                Function<String, OptimizerPublisher> optimizerPublisherFactory,
+                                QuerySimulationUseCase query,
+                                FinishedSessionCache finishedSessionCache) {
         this.registry                   = registry;
         this.airports                   = airports;
         this.flights                    = flights;
@@ -111,6 +116,8 @@ public class RunSimulationUseCase implements SimulationControlPort {
         this.cancellationFeedFactory    = cancellationFeedFactory;
         this.publisherFactory           = publisherFactory;
         this.optimizerPublisherFactory  = optimizerPublisherFactory;
+        this.query                      = query;
+        this.finishedSessionCache       = finishedSessionCache;
     }
 
     public Map<String, AirportDataDTO> getAirports() { return airports; }
@@ -192,9 +199,18 @@ public class RunSimulationUseCase implements SimulationControlPort {
         Thread simThread = new Thread(() -> {
             session.setStatus(SimulationSession.SimStatus.RUNNING);
             runner.run();
-            // Si llegamos aquí, el SimulationEndEvent disparó y el loop terminó
+            // Si llegamos aquí, terminó por SimulationEndEvent, colapso, o stop().
+            // stop() ya dejó el status en STOPPED y ya guardó el resultado final:
+            // no lo pisamos ni lo guardamos de nuevo acá.
             if (session.getStatus() != SimulationSession.SimStatus.STOPPED) {
-                session.setStatus(SimulationSession.SimStatus.COMPLETED);
+                String collapseReason = runner.getCollapseReason();
+                SimulationSession.SimStatus finalStatus = collapseReason != null
+                        ? SimulationSession.SimStatus.COLLAPSED
+                        : SimulationSession.SimStatus.COMPLETED;
+                session.setStatus(finalStatus);
+                finishedSessionCache.record(new FinishedSessionView(
+                        session.getId(), session.getUsername(), finalStatus.name(),
+                        Instant.now(), collapseReason, query.buildAllRoutes(session)));
             }
             registry.remove(sessionId); // liberar recursos del registry al terminar
         }, "simulation-runner-" + sessionId);
@@ -318,6 +334,11 @@ public class RunSimulationUseCase implements SimulationControlPort {
     @Override
     public void stop(String sessionId) {
         SimulationSession session = registry.findOrThrow(sessionId);
+        // Guardar el resultado ANTES de interrumpir/remover: usa la sesión ya en
+        // mano, así que no depende de que siga en el registry.
+        finishedSessionCache.record(new FinishedSessionView(
+                session.getId(), session.getUsername(), SimulationSession.SimStatus.STOPPED.name(),
+                Instant.now(), null, query.buildAllRoutes(session)));
         // interruptAll() marca el status como STOPPED e interrumpe todos los hilos.
         // El simThread captura la InterruptedException y pone runner.running=false.
         session.interruptAll();

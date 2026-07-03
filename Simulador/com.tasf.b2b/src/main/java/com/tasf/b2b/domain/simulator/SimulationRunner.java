@@ -46,6 +46,8 @@ public class SimulationRunner implements Runnable {
     private final List<com.tasf.b2b.domain.simulator.dto.SlaBreachInfo> slaBreaches;
 
     private volatile boolean running;
+    // Razón legible del colapso, si terminó por eso; null si no colapsó.
+    private volatile String  collapseReason;
 
     // ── Stats de soluciones ALNS ──────────────────────────────────────────────
     private int solutionCount  = 0;
@@ -412,12 +414,17 @@ public class SimulationRunner implements Runnable {
                 "*** COLAPSO *** maleta=%s | razón=%s | deadline=%s",
                 info.primaryBaggageId(), reasonLabel, info.primaryDeadline()));
 
+        this.collapseReason = reasonLabel;
+
         publisher.publish(new CollapseDetectedDTO(
                 clock.now(), info.reason(), info.primaryBaggageId(),
                 info.primaryDeadline(), info.consecutiveCycles()));
 
         running = false;
     }
+
+    /** Razón legible del colapso, si terminó por eso; null si no colapsó. */
+    public String getCollapseReason() { return collapseReason; }
 
     private void log(String msg) {
         System.out.printf("[SIM %s] %s%n", clock.now(), msg);

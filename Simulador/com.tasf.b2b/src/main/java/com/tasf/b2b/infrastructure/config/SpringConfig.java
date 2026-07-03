@@ -1,6 +1,7 @@
 package com.tasf.b2b.infrastructure.config;
 
 import com.tasf.b2b.application.port.in.AvailableDaysPort;
+import com.tasf.b2b.application.usecase.FinishedSessionCache;
 import com.tasf.b2b.application.usecase.QuerySimulationUseCase;
 import com.tasf.b2b.application.usecase.RunSimulationUseCase;
 import com.tasf.b2b.application.usecase.SimulationRegistry;
@@ -39,7 +40,9 @@ public class SpringConfig {
             AirportJpaRepository airportRepo,
             FlightScheduleJpaRepository flightRepo,
             SimulationShipmentJpaRepository shipmentRepo,
-            SimulationCancellationJpaRepository cancellationRepo) {
+            SimulationCancellationJpaRepository cancellationRepo,
+            QuerySimulationUseCase querySimulationUseCase,
+            FinishedSessionCache finishedSessionCache) {
 
         DeliveryTypeValues deliveryTypes = new DeliveryTypeValues();
 
@@ -58,13 +61,20 @@ public class SpringConfig {
                 (from, to) -> new DbSimulationShipmentFeed(shipmentRepo, airports, deliveryTypes, from, to),
                 (from, to) -> new DbSimulationCancellationFeed(cancellationRepo, from, to),
                 InMemoryStatePublisher::new,
-                InMemoryOptimizerPublisher::new
+                InMemoryOptimizerPublisher::new,
+                querySimulationUseCase,
+                finishedSessionCache
         );
     }
 
     @Bean
     public QuerySimulationUseCase querySimulationUseCase(SimulationRegistry registry) {
         return new QuerySimulationUseCase(registry);
+    }
+
+    @Bean
+    public FinishedSessionCache finishedSessionCache() {
+        return new FinishedSessionCache();
     }
 
     @Bean

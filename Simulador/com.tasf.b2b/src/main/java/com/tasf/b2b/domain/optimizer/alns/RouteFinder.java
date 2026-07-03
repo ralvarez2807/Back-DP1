@@ -21,6 +21,11 @@ public class RouteFinder {
                                                  Set<String> blacklistedFlights) {
         int pickupMin  = projection.pickupMinutes();
         int connectMin = projection.minConnectionMinutes();
+        // La entrega real ocurre pickupMin después del aterrizaje (ver
+        // SimulationRunner.handleFlightArrival y el criterio onTime/late de
+        // QuerySimulationUseCase, ambos usan arrival + pickupMinutes). El deadline
+        // efectivo para el ÚLTIMO tramo es, por lo tanto, deadline − pickupMinutes.
+        Instant deliveryDeadline = baggage.deadline().minusSeconds(pickupMin * 60L);
 
         // Estado: (arrivalTime, icao, path, hops)
         // Prioridad: menor arrivalTime primero
@@ -44,7 +49,7 @@ public class RouteFinder {
                 for (FlightSnapshot flight : entry.getValue()) {
                     if (blacklistedFlights.contains(flight.flightId())) continue;
                     if (!solution.flightHasCapacity(flight))             continue;
-                    if (flight.arrTime().isAfter(baggage.deadline()))    continue;
+                    if (flight.arrTime().isAfter(deliveryDeadline))      continue;
 
                     List<FlightSnapshot> newPath = append(current.path, flight);
 
@@ -78,6 +83,9 @@ public class RouteFinder {
                                                         AlnsProjection projection) {
         int pickupMin  = projection.pickupMinutes();
         int connectMin = projection.minConnectionMinutes();
+        // Mismo criterio que findRoute: la entrega real es arrival + pickupMinutes,
+        // así que el deadline efectivo para el último tramo descuenta ese buffer.
+        Instant deliveryDeadline = baggage.deadline().minusSeconds(pickupMin * 60L);
 
         // PQ keyed on hop count, then arrival time
         PriorityQueue<State> pq = new PriorityQueue<>(
@@ -102,8 +110,8 @@ public class RouteFinder {
             for (Map.Entry<Instant, List<FlightSnapshot>> entry :
                     byTime.tailMap(current.time).entrySet()) {
                 for (FlightSnapshot flight : entry.getValue()) {
-                    if (!solution.flightHasCapacity(flight))          continue;
-                    if (flight.arrTime().isAfter(baggage.deadline())) continue;
+                    if (!solution.flightHasCapacity(flight))     continue;
+                    if (flight.arrTime().isAfter(deliveryDeadline)) continue;
 
                     List<FlightSnapshot> newPath = append(current.path, flight);
 

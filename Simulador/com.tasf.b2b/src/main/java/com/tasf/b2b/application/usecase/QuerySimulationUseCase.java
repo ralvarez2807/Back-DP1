@@ -140,7 +140,26 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         SimulationSession session = registry.findOrThrow(sessionId);
         SimulationRunner  runner  = session.getRunner();
         Baggage b = findBaggage(session, baggageId);
+        return toRouteView(runner, b);
+    }
 
+    /**
+     * "Última solución": la ruta asignada (o el estado sin ruta) de cada maleta
+     * de la sesión. Recibe la SimulationSession directamente (no el id) para poder
+     * llamarse justo antes de que la sesión salga del registry, sin depender de
+     * que siga registrada.
+     */
+    public List<BaggageRouteView> buildAllRoutes(SimulationSession session) {
+        SimulationRunner runner = session.getRunner();
+        SpaceTimeGraph   graph  = session.getGraph();
+        List<Baggage> all = new ArrayList<>();
+        all.addAll(graph.getPendingBaggages());
+        all.addAll(graph.getAssignedBaggages());
+        all.addAll(runner.getDeliveredBaggages());
+        return all.stream().map(b -> toRouteView(runner, b)).toList();
+    }
+
+    private BaggageRouteView toRouteView(SimulationRunner runner, Baggage b) {
         boolean isDelivered = runner.getDeliveredBaggages().stream()
                 .anyMatch(d -> d.getId().equals(b.getId()));
 

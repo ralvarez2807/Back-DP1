@@ -1,10 +1,12 @@
 package com.tasf.b2b.presentation.rest;
 
+import com.tasf.b2b.application.dto.FinishedSessionView;
 import com.tasf.b2b.application.dto.SimSessionView;
 import com.tasf.b2b.application.port.in.DisruptionCommand;
 import com.tasf.b2b.application.port.in.SimulationControlPort;
 import com.tasf.b2b.application.port.in.SimulationQueryPort;
 import com.tasf.b2b.application.port.in.StartSimulationCommand;
+import com.tasf.b2b.application.usecase.FinishedSessionCache;
 import com.tasf.b2b.domain.simulator.SimulationConfig;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -32,11 +34,14 @@ public class SimulationController {
 
     private final SimulationControlPort controlPort;
     private final SimulationQueryPort   queryPort;
+    private final FinishedSessionCache  finishedSessionCache;
 
     public SimulationController(SimulationControlPort controlPort,
-                                SimulationQueryPort   queryPort) {
-        this.controlPort = controlPort;
-        this.queryPort   = queryPort;
+                                SimulationQueryPort   queryPort,
+                                FinishedSessionCache  finishedSessionCache) {
+        this.controlPort          = controlPort;
+        this.queryPort            = queryPort;
+        this.finishedSessionCache = finishedSessionCache;
     }
 
     // ── DTOs de request/response ──────────────────────────────────────────────
@@ -156,6 +161,17 @@ public class SimulationController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void stop(@PathVariable String id) {
         controlPort.stop(id);
+    }
+
+    /**
+     * Resultado final de una sesión que ya terminó (fin normal, colapso o stop):
+     * status, razón del colapso si aplica, y la última ruta asignada por maleta.
+     * Solo disponible hasta 3 minutos después de terminar — pasado ese tiempo,
+     * o si el id nunca existió, o si la sesión sigue corriendo, responde 404.
+     */
+    @GetMapping("/{id}/result")
+    public FinishedSessionView getResult(@PathVariable String id) {
+        return finishedSessionCache.findOrThrow(id);
     }
 
     // ── Circunstancias (disrupciones) ─────────────────────────────────────────

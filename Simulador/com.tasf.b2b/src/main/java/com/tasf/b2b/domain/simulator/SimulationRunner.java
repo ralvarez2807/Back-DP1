@@ -5,6 +5,7 @@ import com.tasf.b2b.domain.model.graph.componentsgraph.FlightEdge;
 import com.tasf.b2b.domain.model.graph.componentsgraph.STEdge;
 import com.tasf.b2b.domain.model.graph.movable.Baggage;
 import com.tasf.b2b.domain.model.graph.movable.Shipment;
+import com.tasf.b2b.domain.optimizer.alns.BaggageState;
 import com.tasf.b2b.domain.simulator.dto.*;
 import com.tasf.b2b.domain.simulator.event.*;
 
@@ -294,6 +295,17 @@ public class SimulationRunner implements Runnable {
         Instant deadline = b.getDeadlineUtc();
         STEdge  cur      = b.getCurrentEdge();
 
+        // Entrega a tiempo aún en curso: el vuelo final ya aterrizó en el destino y
+        // la recogida cae justo en el deadline. El BaggagePickupEvent comparte
+        // instante con este evento en la DelayQueue y puede procesarse después —
+        // no es incumplimiento.
+        if (cur instanceof FlightEdge fe
+                && fe.getToNode().getIcao().equals(b.getDestIcao())
+                && !fe.getToNode().getTimeUtc()
+                      .plus(config.pickupMinutes(), ChronoUnit.MINUTES).isAfter(deadline)) {
+            return;
+        }
+
         String status, location;
         if (cur instanceof FlightEdge fe) {
             status = "IN_FLIGHT";
@@ -346,6 +358,21 @@ public class SimulationRunner implements Runnable {
         slaBreaches.add(info);
 
         log("*** SLA VENCIDO *** " + b.getId() + " @ " + location + " (" + status + ") | " + cause);
+
+        // SLA vencido ES el colapso del negocio, sin importar si la maleta tenía
+        // ruta asignada o iba en vuelo. El CollapseDetector del hilo ALNS solo ve
+        // maletas pendientes (sin ruta); este evento cubre los demás estados y
+        // fija el momento del colapso en el instante exacto del deadline.
+        if (config.collapseOnFailure()) {
+            BaggageState state = new BaggageState(
+                    b.getId(), location, deadline, b.getDestIcao(), deadline);
+            handleCollapseDetected(new CollapseDetectedEvent(
+                    deadline,
+                    new CollapseDetector.CollapseInfo(
+                            CollapseDetector.CollapseReason.DEADLINE_EXCEEDED,
+                            List.of(state), 0),
+                    clock));
+        }
     }
 
     private com.tasf.b2b.domain.simulator.dto.SlaBreachInfo.Leg legOf(FlightEdge fe, String state) {
@@ -364,6 +391,15 @@ public class SimulationRunner implements Runnable {
         for (Map.Entry<Baggage, List<STEdge>> entry : e.getRoutes().entrySet()) {
             Baggage      baggage = entry.getKey();
             List<STEdge> route   = entry.getValue();
+
+            // Solución duplicada: la maleta ya tiene plan vigente (otra solución ALNS
+            // o el fallback genético la asignó mientras este solve estaba en curso).
+            // Aplicarla haría clearExpectedRoute sin liberar los asientos del plan
+            // anterior (reservas huérfanas) y la duplicaría en assignedBaggages.
+            if (!baggage.isUnassigned()) {
+                stale++;
+                continue;
+            }
 
             // Solución obsoleta: el primer vuelo ya partió antes de que llegara la solución.
             // Dejar el baggage en pending para que la siguiente iteración ALNS lo re-enrute.
@@ -431,7 +467,7 @@ public class SimulationRunner implements Runnable {
     }
     private void runOptimizationCycle() {
         log("Ejecutando ciclo de optimización...");
-        graph.optimizeAndAssignRoutes();
+        graph.optimizeAndAssignRoutes(config.pickupMinutes());
 
         int pendingCount = graph.getPendingBaggages().size();
         int assignedCount = graph.getAssignedBaggages().size();

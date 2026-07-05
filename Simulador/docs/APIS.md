@@ -56,6 +56,14 @@ Base URL: `http://localhost:8080/api/v1`
 | ✅ | GET | `/simulations/:id/reports/summary` | resumen de simulación |
 | ✅ | GET | `/operations` | sesión "Operación Día a Día" en vivo (la crea si no existe) |
 | ✅ | POST | `/operations/orders` | carga manual de una orden de maletas (destino + cantidad; origen = ciudad del operario) |
+| 🔴 | POST | `/admin/airports/single` | crea un aeropuerto individual (nuevo, exigencias v2.0) |
+| 🔴 | POST | `/admin/flights/single` | crea un vuelo (schedule) individual (nuevo, exigencias v2.0) |
+| 🔴 | PUT | `/admin/flights/:scheduleId` | modifica horario/capacidad de un vuelo existente, dispara replanificación (nuevo) |
+| 🔴 | GET | `/simulations/:id/baggage/:baggageId/history` | log de transiciones de estado de una maleta (nuevo) |
+| 🔧 | POST | `/simulations/:id/disruptions` | **modificado** — `kind=CANCELLATION` ahora usa `scheduleId` sin fecha en vez de `flightId` con fecha |
+| 🔴 | POST | `/simulations/:id/disruptions/bulk` | inyecta una lista de disrupciones en un solo request (nuevo) |
+| 🔴 | GET | `/operations/orders/count` | total histórico de pedidos registrados en BD, a un instante dado (nuevo) |
+| 🔧 | GET | `/simulations/:id/dashboard` | **modificado** — agrega `fleetOccupancyPct` y `airportOccupancyPct` |
 
 ---
 
@@ -986,3 +994,203 @@ Canal separado del `/ws` principal, exclusivo para métricas del optimizador (AL
 | `COLLAPSE_DETAIL` | `{ reason: DEADLINE_EXCEEDED\|NO_VIABLE_ROUTE, consecutiveCycles, unroutedBaggages: [{ baggageId, originIcao, destIcao, availableFrom, deadline, minutesOverDeadline }] }` — detalle completo al detectarse un colapso (solo si `collapseOnFailure: true` en `POST /simulations`) |
 
 `minutesOverDeadline` > 0 si la maleta ya superó su deadline; `0` si aún no lo superó pero el optimizador no encontró ninguna ruta viable.
+
+---
+
+## 15. Pendientes de implementar / modificar (exigencias v2.0)
+
+Endpoints derivados del cruce entre `Exigencias_consolidadas.xlsx` (columna Exigible = E) y las
+APIs existentes arriba. Cada uno referencia el/los `LE-XX` que resuelve.
+
+### POST /admin/airports/single — 🔴 (LE-10, LE-13, LE-14, LE-15)
+
+Crea un aeropuerto individual. Hoy la única vía es la carga masiva por archivo
+(`POST /admin/airports?mode=merge`); este endpoint abre el alta unitaria — decisión tomada
+de romper la premisa actual de "red fija" (`DataController` línea 74).
+
+`city` y `continent` (LE-14/LE-15) quedan como **campos string** del mismo payload,
+sin catálogo/entidad propia — decisión tomada para no sobre-diseñar.
+
+Request:
+```json
+{ "icao": "SKBO", "city": "Bogota", "country": "Colombia", "continent": "SOUTH_AMERICA",
+  "shortName": "bogo", "gmtOffset": -5, "capacity": 430, "lat": 4.701, "lon": -74.147 }
+```
+
+Response `201`: mismo shape que `GET /data/airports`.
+
+Errores: `400` (campo faltante/inválido) · `409` (ya existe un aeropuerto con ese ICAO)
+
+---
+
+### POST /admin/flights/single — 🔴 (LE-10)
+
+Crea un vuelo (schedule recurrente) individual. Mismo criterio que el anterior: hoy solo hay
+carga masiva por archivo (`POST /admin/flights?mode=merge`).
+
+Request:
+```json
+{ "originIcao": "SKBO", "destIcao": "SEQM", "depTimeLocal": "19:00", "arrTimeLocal": "20:00", "capacity": 120 }
+```
+
+Response `201`: mismo shape que `GET /data/routes`. El `id` se genera igual que hoy:
+`"ORIG-DEST-HH:mm"` (`FlightScheduleDataDTO.generateIdFlightSchedule`).
+
+Errores: `400` · `404` (ICAO de origen o destino no existe) · `409` (ya existe un schedule con ese id)
+
+---
+
+### PUT /admin/flights/:scheduleId — 🔴 (LE-12, LE-27)
+
+Modifica horario y/o capacidad de un vuelo (schedule) existente **antes de su próxima partida**.
+Debe disparar la replanificación de las maletas afectadas (LE-27) en toda sesión activa que
+tenga ese schedule expandido en su horizonte.
+
+Request (campos opcionales, al menos uno):
+```json
+{ "depTimeLocal": "20:00", "arrTimeLocal": "21:00", "capacity": 140 }
+```
+
+Response `200`: `RouteResponse` actualizado.
+
+Errores: `400` · `404` (`scheduleId` no existe)
+
+---
+
+### GET /simulations/:id/baggage/:baggageId/history — 🔴 (LE-45)
+
+Log de transiciones de estado de una maleta con timestamp — distinto de `/route` (que da los
+tramos de vuelo). Complementa el tracking actual con el histórico de cambios pedido explícitamente
+por LE-45.
+
+Response `200`:
+```json
+[
+  { "timestamp": "2026-01-02T10:00:00Z", "status": "PENDING",   "icao": "SPJC" },
+  { "timestamp": "2026-01-02T10:05:00Z", "status": "WAITING",   "icao": "SPJC" },
+  { "timestamp": "2026-01-02T12:00:00Z", "status": "IN_FLIGHT", "flightId": "SPJC-SKBO-10:00-20260102" },
+  { "timestamp": "2026-01-02T14:00:00Z", "status": "WAITING",   "icao": "SKBO" },
+  { "timestamp": "2026-01-03T20:00:00Z", "status": "DELIVERED", "icao": "SEQM" }
+]
+```
+
+Errores: `404` maleta no existe en la sesión
+
+---
+
+### POST /simulations/:id/disruptions — 🔧 MODIFICADO (LE-70, LE-71)
+
+**Cambio de contrato solo para `kind: CANCELLATION`.** El campo `flightId` (instancia con
+fecha, `idFlightEdge`) se **reemplaza** por `scheduleId` (horario recurrente sin fecha,
+mismo formato que `GET /data/routes` → `id`, ej. `"SKBO-SEQM-19:00"`).
+
+**Regla de resolución de fecha** (dada por el usuario): se cancela la ocurrencia de **hoy**
+si faltan **más de 1 hora simulada** para su partida; si ya se pasó ese corte (falta ≤1h o ya
+partió), se cancela la ocurrencia de **mañana**.
+
+```
+depHoy = combineDateAndLocalTime(simTime.toLocalDate(), schedule.depTimeLocal, origin.gmtOffset)
+cutoff = depHoy - 1h
+target = (simTime <= cutoff) ? depHoy : depMañana
+```
+
+El backend resuelve `target` (fecha+hora UTC de partida) y llama directamente a
+`SpaceTimeGraph.cancelFlight(scheduleKey, depTimeUtc)` — **reutiliza el mecanismo ya
+existente** de cola para vuelos fuera del horizonte actual (`CLAUDE.md`: *"Pending
+cancellations (beyond horizonCompleted) are queued and applied on next expansion"*), sin
+necesidad de implementar un nuevo sistema de espera.
+
+Request:
+```json
+{ "kind": "CANCELLATION", "scheduleId": "SKBO-SEQM-19:00", "severity": 5 }
+```
+
+Response `200`:
+```json
+{ "resolvedFlightId": "SKBO-SEQM-19:00-20260705", "affectedFlights": 1, "flightIds": ["SKBO-SEQM-19:00-20260705"] }
+```
+
+> `AVERIA`, `SEGMENT_BLOCK` y `NODE_BLOCK` **no cambian** — siguen usando `flightId`/`originIcao`/`destIcao`/`fromUtc`/`toUtc` tal como hoy.
+
+Errores: `400` · `404` (`scheduleId` no existe)
+
+---
+
+### POST /simulations/:id/disruptions/bulk — 🔴 (LE-70, LE-71)
+
+Inyecta una lista de disrupciones en un solo request (cancelación masiva). Sin generador
+aleatorio server-side — decisión: el operario elige manualmente cuáles cancelar, el
+front puede llamarlo con una selección al azar si lo desea.
+
+Request:
+```json
+{ "disruptions": [
+  { "kind": "CANCELLATION", "scheduleId": "SKBO-SEQM-19:00", "severity": 5 },
+  { "kind": "CANCELLATION", "scheduleId": "SEQM-SPJC-08:00", "severity": 5 }
+] }
+```
+
+Response `200`:
+```json
+{ "results": [
+  { "resolvedFlightId": "SKBO-SEQM-19:00-20260705", "affectedFlights": 1, "flightIds": ["SKBO-SEQM-19:00-20260705"] },
+  { "resolvedFlightId": "SEQM-SPJC-08:00-20260706", "affectedFlights": 1, "flightIds": ["SEQM-SPJC-08:00-20260706"] }
+] }
+```
+
+---
+
+### Persistencia de Operación Día a Día + GET /operations/orders/count — 🔴 (LE-36)
+
+Hoy `POST /operations/orders` vive **solo en RAM** (mismo motor que cualquier sesión de
+simulación) — se pierde al reiniciar el server. LE-36 requiere poder consultar el total de
+pedidos registrados "en ese momento", y que en modo manual (Día a Día) se pueda guardar en
+BD y leer de ahí.
+
+Cambios:
+1. Nueva tabla/entidad para persistir cada orden creada vía `POST /operations/orders`
+   (shipmentId, baggageIds, originIcao, destIcao, quantity, entryTime, clientId).
+2. Nuevo endpoint de conteo:
+
+```
+GET /operations/orders/count
+```
+
+Response `200`:
+```json
+{ "total": 184, "asOf": "2026-07-04T15:30:00Z" }
+```
+
+---
+
+### GET /simulations/:id/dashboard — 🔧 MODIFICADO (LE-101, LE-102)
+
+Agrega dos indicadores **globales** (no por nodo/vuelo individual), pedidos explícitamente
+por el docente:
+
+- `fleetOccupancyPct` = (maletas en vuelo + maletas asignadas a un vuelo) / suma de la
+  capacidad de todos los vuelos de la flota.
+- `airportOccupancyPct` = maletas en aeropuertos / suma de la capacidad de todos los
+  aeropuertos.
+
+Cadencia de recálculo: a lo más cada 4 minutos simulados; si el salto (`Sc`) del algoritmo
+de planificación es ≤4 min, puede recalcularse en cada iteración.
+
+> El backend entrega el **porcentaje crudo**, sin campo de color/nivel — el front calcula el
+> semáforo (igual que ya hace con `onTime`/`late`/`breached` en LE-56), para no duplicar esa
+> lógica en dos capas.
+
+Response `200` (campos nuevos en negrita conceptual, sin cambiar los existentes):
+```json
+{
+  "simTime":              "2026-01-03T14:22:00Z",
+  "delivered":             1240,
+  "pending":               87,
+  "assigned":              312,
+  "inFlight":              95,
+  "slaBreaches":           14,
+  "throughputPerHour":     38.5,
+  "fleetOccupancyPct":     42.3,
+  "airportOccupancyPct":   61.8
+}
+```

@@ -16,6 +16,12 @@ public class Baggage {
     private List<STEdge>       routeTraveled;
     private ArrayDeque<STEdge> expectedRoute;
     private STEdge             currentEdge;
+    // Log de transiciones de estado (LE-45) — solo lo escribe SimulationRunner en la
+    // maleta "real" del grafo, nunca las copias efímeras que usa el ALNS.
+    private final List<StatusEntry> history;
+
+    /** Una entrada del historial de estados de una maleta (LE-45). */
+    public record StatusEntry(Instant timestamp, String status, String icao, String flightId) {}
 
     // Constructor: llamado solo desde Shipment, index es 1-based
     public Baggage(Shipment shipment, int index) {
@@ -25,6 +31,7 @@ public class Baggage {
         this.deadlineUtc   = shipment.getDeadlineUtc();
         this.routeTraveled = new ArrayList<>();
         this.expectedRoute = new ArrayDeque<>();
+        this.history       = new ArrayList<>();
     }
 
     // Constructor de copia — solo para deepCopy en BaggageSolution
@@ -36,6 +43,16 @@ public class Baggage {
         this.currentEdge   = original.currentEdge;
         this.routeTraveled = new ArrayList<>(original.routeTraveled);
         this.expectedRoute = new ArrayDeque<>(original.expectedRoute);
+        this.history       = original.history;
+    }
+
+    // Agrega una entrada al historial de estados (LE-45).
+    public void recordHistory(Instant timestamp, String status, String icao, String flightId) {
+        this.history.add(new StatusEntry(timestamp, status, icao, flightId));
+    }
+
+    public List<StatusEntry> getHistory() {
+        return Collections.unmodifiableList(this.history);
     }
 
     // ── Setters ───────────────────────────────────────────────────────────────

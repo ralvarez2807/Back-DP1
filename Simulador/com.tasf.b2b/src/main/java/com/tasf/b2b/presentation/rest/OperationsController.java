@@ -2,6 +2,7 @@ package com.tasf.b2b.presentation.rest;
 
 import com.tasf.b2b.application.port.in.InjectShipmentCommand;
 import com.tasf.b2b.application.port.in.InjectShipmentResult;
+import com.tasf.b2b.application.port.in.ManualOrderPort;
 import com.tasf.b2b.application.port.in.SimulationControlPort;
 import com.tasf.b2b.application.usecase.DailyOperationsService;
 import com.tasf.b2b.application.usecase.SimulationSession;
@@ -41,11 +42,14 @@ public class OperationsController {
 
     private final DailyOperationsService dailyOps;
     private final SimulationControlPort  controlPort;
+    private final ManualOrderPort        manualOrderPort;
 
     public OperationsController(DailyOperationsService dailyOps,
-                               SimulationControlPort controlPort) {
-        this.dailyOps    = dailyOps;
-        this.controlPort = controlPort;
+                               SimulationControlPort controlPort,
+                               ManualOrderPort manualOrderPort) {
+        this.dailyOps        = dailyOps;
+        this.controlPort     = controlPort;
+        this.manualOrderPort = manualOrderPort;
     }
 
     /**
@@ -115,8 +119,22 @@ public class OperationsController {
                 session.getId(),
                 new InjectShipmentCommand(originIcao, destIcao, req.quantity(), clientId, username));
 
+        // Persistencia en BD (LE-36): antes de esto la orden solo vivía en RAM del
+        // motor de simulación y se perdía al reiniciar el servidor.
+        manualOrderPort.recordOrder(result.shipmentId(), result.originIcao(), result.destIcao(),
+                result.quantity(), clientId, result.entryTime());
+
         return new CreateOrderResponse(
                 result.shipmentId(), result.baggageIds(), result.originIcao(),
                 result.destIcao(), result.quantity(), result.entryTime());
+    }
+
+    // ── Total histórico de pedidos registrados (LE-36) ────────────────────────
+
+    record OrderCountResponse(long total, java.time.Instant asOf) {}
+
+    @GetMapping("/orders/count")
+    public OrderCountResponse countOrders() {
+        return new OrderCountResponse(manualOrderPort.countOrders(), java.time.Instant.now());
     }
 }

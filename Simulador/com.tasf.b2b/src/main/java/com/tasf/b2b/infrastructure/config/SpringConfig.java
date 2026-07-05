@@ -1,6 +1,7 @@
 package com.tasf.b2b.infrastructure.config;
 
 import com.tasf.b2b.application.port.in.AvailableDaysPort;
+import com.tasf.b2b.application.usecase.FinishedSessionCache;
 import com.tasf.b2b.application.usecase.QuerySimulationUseCase;
 import com.tasf.b2b.application.usecase.RunSimulationUseCase;
 import com.tasf.b2b.application.usecase.SimulationRegistry;
@@ -23,6 +24,8 @@ import org.springframework.context.annotation.Configuration;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 @Configuration
@@ -39,16 +42,22 @@ public class SpringConfig {
             AirportJpaRepository airportRepo,
             FlightScheduleJpaRepository flightRepo,
             SimulationShipmentJpaRepository shipmentRepo,
-            SimulationCancellationJpaRepository cancellationRepo) {
+            SimulationCancellationJpaRepository cancellationRepo,
+            QuerySimulationUseCase querySimulationUseCase,
+            FinishedSessionCache finishedSessionCache) {
 
         DeliveryTypeValues deliveryTypes = new DeliveryTypeValues();
 
-        Map<String, AirportDataDTO> airports = airportRepo.findAll().stream()
-                .collect(Collectors.toMap(AirportEntity::getIcao, this::toAirportDto));
+        // ConcurrentHashMap / CopyOnWriteArrayList: esta misma instancia se comparte
+        // entre todas las sesiones durante toda la vida de la app, y el alta de un
+        // aeropuerto/vuelo individual (admin) la muta en caliente desde un hilo HTTP
+        // mientras otros hilos (sesiones, ALNS) la leen.
+        Map<String, AirportDataDTO> airports = new ConcurrentHashMap<>(airportRepo.findAll().stream()
+                .collect(Collectors.toMap(AirportEntity::getIcao, this::toAirportDto)));
 
-        List<FlightScheduleDataDTO> flights = flightRepo.findAll().stream()
+        List<FlightScheduleDataDTO> flights = new CopyOnWriteArrayList<>(flightRepo.findAll().stream()
                 .map(e -> toFlightScheduleDto(e, airports))
-                .collect(Collectors.toList());
+                .collect(Collectors.toList()));
 
         return new RunSimulationUseCase(
                 registry,
@@ -58,13 +67,20 @@ public class SpringConfig {
                 (from, to) -> new DbSimulationShipmentFeed(shipmentRepo, airports, deliveryTypes, from, to),
                 (from, to) -> new DbSimulationCancellationFeed(cancellationRepo, from, to),
                 InMemoryStatePublisher::new,
-                InMemoryOptimizerPublisher::new
+                InMemoryOptimizerPublisher::new,
+                querySimulationUseCase,
+                finishedSessionCache
         );
     }
 
     @Bean
     public QuerySimulationUseCase querySimulationUseCase(SimulationRegistry registry) {
         return new QuerySimulationUseCase(registry);
+    }
+
+    @Bean
+    public FinishedSessionCache finishedSessionCache() {
+        return new FinishedSessionCache();
     }
 
     @Bean

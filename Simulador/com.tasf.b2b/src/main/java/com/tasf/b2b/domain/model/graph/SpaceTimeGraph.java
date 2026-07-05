@@ -111,6 +111,13 @@ public class SpaceTimeGraph {
         this.flightsSchedule.put(flightScheduleData.getId(), flightScheduleData); //Datos fijos de los flight diarios
     }
 
+    // Retira un horario recurrente: no se expandirán más días para este id (LE-12).
+    // Las FlightEdge ya expandidas para este id no se tocan aquí — cancélalas aparte
+    // con cancelFlight si corresponde.
+    public void removeScheduledFlight(String flightScheduleId) {
+        this.flightsSchedule.remove(flightScheduleId);
+    }
+
     //TODO: hacer un registro de una lista de programaciones de vuelo
 
     //--Expansión y reducción del grafo diario -----------
@@ -507,7 +514,7 @@ public class SpaceTimeGraph {
         return result;
     }
 
-    public void optimizeAndAssignRoutes() {
+    public void optimizeAndAssignRoutes(int pickupMinutes) {
         GeneticAlgorithm ga = new GeneticAlgorithm(this);
 
         List<Baggage> toAssign = new ArrayList<>(this.pendingBaggages);
@@ -521,18 +528,44 @@ public class SpaceTimeGraph {
             List<STEdge> route = ga.planRoute(baggage, currentTime);
 
             if (route != null && !route.isEmpty()) {
+                // El runner solo ejecuta rutas de FlightEdges: al embarcar compara
+                // peekNextEdge() == vuelo, y los WaitEdges de escala los repone él
+                // mismo en cada llegada. El BFS del GA intercala WaitEdges; sin este
+                // filtro la maleta queda asignada pero jamás embarca (plan zombi).
+                List<STEdge> flights = new ArrayList<>();
+                for (STEdge edge : route) {
+                    if (edge instanceof FlightEdge) flights.add(edge);
+                }
+                if (flights.isEmpty()) {
+                    failed++;
+                    continue;
+                }
                 // Verificar que la ruta realmente llega al destino
-                STEdge lastEdge = route.get(route.size() - 1);
-                if (lastEdge.getToNode().getAirport().getIcao().equals(baggage.getDestIcao())) {
-                    baggage.setExpectedRoute(route);
-                    baggage.setCurrentEdge(route.get(0));
-                    assignBaggage(baggage);
-                    assigned++;
-                } else {
+                STEdge lastEdge = flights.get(flights.size() - 1);
+                if (!lastEdge.getToNode().getAirport().getIcao().equals(baggage.getDestIcao())) {
                     System.out.println("[WARN] Ruta no llega a destino: " + baggage.getId() +
                             " -> " + lastEdge.getToNode().getAirport().getIcao());
                     failed++;
+                    continue;
                 }
+                // Verificar que la entrega real (llegada + recogida) cumple el deadline.
+                // El GA solo penaliza la tardanza en el fitness; una ruta tardía asignada
+                // sacaría la maleta de pending y el CollapseDetector no la vería.
+                Instant deliveryAt = lastEdge.getToNode().getTimeUtc()
+                        .plus(pickupMinutes, ChronoUnit.MINUTES);
+                if (baggage.getDeadlineUtc() != null && deliveryAt.isAfter(baggage.getDeadlineUtc())) {
+                    System.out.println("[WARN] Ruta tardía descartada: " + baggage.getId() +
+                            " (entrega " + deliveryAt + " > deadline " + baggage.getDeadlineUtc() + ")");
+                    failed++;
+                    continue;
+                }
+                // currentEdge no se toca: la maleta sigue en su WaitEdge hasta que
+                // handleFlightDeparture la embarque (igual que la asignación vía ALNS).
+                // Setearla al vuelo hacía que al partir se liberara el asiento en vez
+                // del almacén, y al llegar se liberara de nuevo → load negativo.
+                baggage.setExpectedRoute(flights);
+                assignBaggage(baggage);
+                assigned++;
             } else {
                 failed++;
             }

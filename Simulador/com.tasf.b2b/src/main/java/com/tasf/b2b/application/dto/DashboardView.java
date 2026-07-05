@@ -12,6 +12,11 @@ import java.time.Instant;
  * inFlight         — baggages actualmente en el aire (currentEdge es FlightEdge)
  * slaBreaches      — baggages cuyo deadlineUtc ya pasó (en cualquier estado)
  * throughputPerHour — entregados / horas simuladas transcurridas
+ * fleetOccupancyPct    — indicador global (LE-101): (carga reservada en todos los
+ *                        FlightEdge activos) / (capacidad de todos los FlightEdge activos)
+ * airportOccupancyPct  — indicador global (LE-102): (baggages físicamente en
+ *                        aeropuertos) / (capacidad de todos los aeropuertos)
+ * Ambos son porcentajes crudos, sin nivel/color — el front calcula el semáforo.
  */
 public record DashboardView(
         Instant simTime,
@@ -20,5 +25,7 @@ public record DashboardView(
         int     assigned,
         int     inFlight,
         int     slaBreaches,
-        double  throughputPerHour
+        double  throughputPerHour,
+        double  fleetOccupancyPct,
+        double  airportOccupancyPct
 ) {}

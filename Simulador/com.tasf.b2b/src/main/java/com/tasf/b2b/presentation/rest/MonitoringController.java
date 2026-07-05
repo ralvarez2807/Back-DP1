@@ -45,11 +45,14 @@ public class MonitoringController {
             int     assigned,
             int     inFlight,
             int     slaBreaches,
-            double  throughputPerHour) {
+            double  throughputPerHour,
+            double  fleetOccupancyPct,
+            double  airportOccupancyPct) {
 
         static DashboardResponse from(DashboardView v) {
             return new DashboardResponse(v.simTime(), v.delivered(), v.pending(),
-                    v.assigned(), v.inFlight(), v.slaBreaches(), v.throughputPerHour());
+                    v.assigned(), v.inFlight(), v.slaBreaches(), v.throughputPerHour(),
+                    v.fleetOccupancyPct(), v.airportOccupancyPct());
         }
     }
 

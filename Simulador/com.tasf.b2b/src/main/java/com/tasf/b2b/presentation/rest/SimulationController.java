@@ -1,10 +1,12 @@
 package com.tasf.b2b.presentation.rest;
 
+import com.tasf.b2b.application.dto.FinishedSessionView;
 import com.tasf.b2b.application.dto.SimSessionView;
 import com.tasf.b2b.application.port.in.DisruptionCommand;
 import com.tasf.b2b.application.port.in.SimulationControlPort;
 import com.tasf.b2b.application.port.in.SimulationQueryPort;
 import com.tasf.b2b.application.port.in.StartSimulationCommand;
+import com.tasf.b2b.application.usecase.FinishedSessionCache;
 import com.tasf.b2b.domain.simulator.SimulationConfig;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -32,11 +34,14 @@ public class SimulationController {
 
     private final SimulationControlPort controlPort;
     private final SimulationQueryPort   queryPort;
+    private final FinishedSessionCache  finishedSessionCache;
 
     public SimulationController(SimulationControlPort controlPort,
-                                SimulationQueryPort   queryPort) {
-        this.controlPort = controlPort;
-        this.queryPort   = queryPort;
+                                SimulationQueryPort   queryPort,
+                                FinishedSessionCache  finishedSessionCache) {
+        this.controlPort          = controlPort;
+        this.queryPort            = queryPort;
+        this.finishedSessionCache = finishedSessionCache;
     }
 
     // ── DTOs de request/response ──────────────────────────────────────────────
@@ -158,16 +163,31 @@ public class SimulationController {
         controlPort.stop(id);
     }
 
+    /**
+     * Resultado final de una sesión que ya terminó (fin normal, colapso o stop):
+     * status, razón del colapso si aplica, y la última ruta asignada por maleta.
+     * Solo disponible hasta 3 minutos después de terminar — pasado ese tiempo,
+     * o si el id nunca existió, o si la sesión sigue corriendo, responde 404.
+     */
+    @GetMapping("/{id}/result")
+    public FinishedSessionView getResult(@PathVariable String id) {
+        return finishedSessionCache.findOrThrow(id);
+    }
+
     // ── Circunstancias (disrupciones) ─────────────────────────────────────────
 
     /**
      * Body del POST /simulations/:id/disruptions.
      * kind: CANCELLATION | AVERIA | SEGMENT_BLOCK | NODE_BLOCK
+     *
+     * CANCELLATION usa scheduleId (horario recurrente sin fecha, ORIG-DEST-HH:mm):
+     * el backend resuelve si cancela la instancia de hoy o de mañana según la regla
+     * de 1h simulada antes de la partida. AVERIA sigue usando flightId (con fecha).
      */
-    record DisruptionRequest(String kind, String flightId, String originIcao,
+    record DisruptionRequest(String kind, String scheduleId, String flightId, String originIcao,
                              String destIcao, Instant fromUtc, Instant toUtc, int severity) {}
 
-    record DisruptionResponse(int affectedFlights, List<String> flightIds) {}
+    record DisruptionResponse(String resolvedFlightId, int affectedFlights, List<String> flightIds) {}
 
     /**
      * Inyecta una circunstancia (cancelación / avería / bloqueo de tramo o nodo).
@@ -177,11 +197,42 @@ public class SimulationController {
     @PostMapping("/{id}/disruptions")
     public DisruptionResponse injectDisruption(@PathVariable String id,
                                                @RequestBody DisruptionRequest req) {
+        DisruptionCommand.Kind kind = DisruptionCommand.Kind.valueOf(req.kind());
+        if (kind == DisruptionCommand.Kind.CANCELLATION
+                && (req.scheduleId() == null || req.scheduleId().isBlank())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "Campo requerido: scheduleId");
+        }
+
         DisruptionCommand cmd = new DisruptionCommand(
-                DisruptionCommand.Kind.valueOf(req.kind()),
-                req.flightId(), req.originIcao(), req.destIcao(),
+                kind, req.scheduleId(), req.flightId(), req.originIcao(), req.destIcao(),
                 req.fromUtc(), req.toUtc(), req.severity());
         List<String> affected = controlPort.injectDisruption(id, cmd);
-        return new DisruptionResponse(affected.size(), affected);
+        String resolvedFlightId = kind == DisruptionCommand.Kind.CANCELLATION && !affected.isEmpty()
+                ? affected.get(0) : null;
+        return new DisruptionResponse(resolvedFlightId, affected.size(), affected);
+    }
+
+    // ── Disrupciones en lote (LE-70, LE-71: cancelación masiva) ───────────────
+
+    record BulkDisruptionRequest(List<DisruptionRequest> disruptions) {}
+    record BulkDisruptionResponse(List<DisruptionResponse> results) {}
+
+    /**
+     * Inyecta una lista de disrupciones en un solo request (cancelación masiva).
+     * Sin generador aleatorio server-side: el operario elige manualmente cuáles
+     * cancelar (el front puede armar la lista con una selección al azar si quiere).
+     */
+    @PostMapping("/{id}/disruptions/bulk")
+    public BulkDisruptionResponse injectDisruptionsBulk(@PathVariable String id,
+                                                        @RequestBody BulkDisruptionRequest req) {
+        if (req.disruptions() == null || req.disruptions().isEmpty())
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "Campo requerido: disruptions (no vacío)");
+
+        List<DisruptionResponse> results = req.disruptions().stream()
+                .map(r -> injectDisruption(id, r))
+                .toList();
+        return new BulkDisruptionResponse(results);
     }
 }

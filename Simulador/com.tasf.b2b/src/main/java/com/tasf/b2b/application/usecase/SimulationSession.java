@@ -20,7 +20,7 @@ import java.util.List;
 public class SimulationSession {
 
     /** Estados posibles del ciclo de vida de una sesión. */
-    public enum SimStatus { STARTING, RUNNING, PAUSED, COMPLETED, STOPPED }
+    public enum SimStatus { STARTING, RUNNING, PAUSED, COMPLETED, COLLAPSED, STOPPED }
 
     private final String            id;
     private final String            username;

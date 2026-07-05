@@ -40,4 +40,27 @@ public class DbAirportAdminService implements AirportAdminPort {
 
         System.out.printf("[AIRPORTS] Capacidad de %s actualizada a %d%n", icao, capacity);
     }
+
+    @Override
+    @Transactional
+    public AirportDataDTO createAirport(String icao, String city, String country, String continent,
+                                        String shortName, int gmtOffset, int capacity,
+                                        double latitude, double longitude) {
+        String key = icao.trim().toUpperCase();
+        if (airportRepo.existsById(key))
+            throw new IllegalStateException("Ya existe un aeropuerto con ICAO: " + key);
+
+        AirportEntity entity = new AirportEntity(key, city, country, continent, shortName,
+                (short) gmtOffset, capacity, latitude, longitude);
+        airportRepo.save(entity);
+
+        AirportDataDTO dto = new AirportDataDTO(key, city, country, continent, shortName,
+                gmtOffset, capacity, latitude, longitude);
+        // Visible de inmediato para toda sesión que se cree a partir de ahora (no
+        // retroactivo a sesiones ya corriendo, igual que un vuelo nuevo).
+        runSimulationUseCase.getAirports().put(key, dto);
+
+        System.out.printf("[AIRPORTS] Aeropuerto %s creado%n", key);
+        return dto;
+    }
 }

@@ -1,5 +1,6 @@
 package com.tasf.b2b.application.usecase;
 
+import com.tasf.b2b.application.dto.BaggageHistoryView;
 import com.tasf.b2b.application.dto.BaggageRouteView;
 import com.tasf.b2b.application.dto.BaggageView;
 import com.tasf.b2b.application.dto.DashboardView;
@@ -11,6 +12,7 @@ import com.tasf.b2b.application.dto.ShipmentView;
 import com.tasf.b2b.application.dto.SimSessionView;
 import com.tasf.b2b.application.dto.SnapshotView;
 import com.tasf.b2b.domain.model.graph.componentsgraph.STEdge;
+import com.tasf.b2b.domain.model.graph.immovable.AirportDataDTO;
 import com.tasf.b2b.domain.model.graph.componentsgraph.WaitEdge;
 import com.tasf.b2b.application.port.in.SimulationQueryPort;
 import com.tasf.b2b.domain.model.graph.SpaceTimeGraph;
@@ -119,8 +121,25 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 .toSeconds() / 3600.0;
         double throughput = elapsedHours > 0 ? delivered / elapsedHours : 0.0;
 
+        // Indicadores globales (LE-101, LE-102): se recalculan en cada llamada
+        // (sin caché), lo que ya satisface "a lo más cada 4 min" — nunca están más
+        // desactualizados que el momento exacto de la consulta.
+        int fleetLoad = 0, fleetCapacity = 0;
+        for (FlightEdge fe : graph.getAllFlightEdges()) {
+            if (fe.isCancelled()) continue;
+            fleetLoad     += fe.getLoad();
+            fleetCapacity += fe.getCapacity();
+        }
+        double fleetOccupancyPct = fleetCapacity > 0 ? 100.0 * fleetLoad / fleetCapacity : 0.0;
+
+        int airportLoad = pending + assigned; // baggages físicamente en un aeropuerto ahora
+        int airportCapacity = graph.getAllAirports().stream().mapToInt(AirportDataDTO::getCapacity).sum();
+        double airportOccupancyPct = airportCapacity > 0 ? 100.0 * airportLoad / airportCapacity : 0.0;
+
         return new DashboardView(simNow, delivered, pending, assigned, inFlight,
-                slaBreaches, Math.round(throughput * 10.0) / 10.0);
+                slaBreaches, Math.round(throughput * 10.0) / 10.0,
+                Math.round(fleetOccupancyPct * 10.0) / 10.0,
+                Math.round(airportOccupancyPct * 10.0) / 10.0);
     }
 
     // ── getBaggageState ───────────────────────────────────────────────────────
@@ -140,7 +159,26 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
         SimulationSession session = registry.findOrThrow(sessionId);
         SimulationRunner  runner  = session.getRunner();
         Baggage b = findBaggage(session, baggageId);
+        return toRouteView(runner, b);
+    }
 
+    /**
+     * "Última solución": la ruta asignada (o el estado sin ruta) de cada maleta
+     * de la sesión. Recibe la SimulationSession directamente (no el id) para poder
+     * llamarse justo antes de que la sesión salga del registry, sin depender de
+     * que siga registrada.
+     */
+    public List<BaggageRouteView> buildAllRoutes(SimulationSession session) {
+        SimulationRunner runner = session.getRunner();
+        SpaceTimeGraph   graph  = session.getGraph();
+        List<Baggage> all = new ArrayList<>();
+        all.addAll(graph.getPendingBaggages());
+        all.addAll(graph.getAssignedBaggages());
+        all.addAll(runner.getDeliveredBaggages());
+        return all.stream().map(b -> toRouteView(runner, b)).toList();
+    }
+
+    private BaggageRouteView toRouteView(SimulationRunner runner, Baggage b) {
         boolean isDelivered = runner.getDeliveredBaggages().stream()
                 .anyMatch(d -> d.getId().equals(b.getId()));
 
@@ -186,6 +224,18 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 fe.getToNode().getTimeUtc(),
                 fe.getIdFlightEdge(),
                 state);
+    }
+
+    // ── getBaggageHistory (LE-45) ─────────────────────────────────────────────
+
+    @Override
+    public BaggageHistoryView getBaggageHistory(String sessionId, String baggageId) {
+        SimulationSession session = registry.findOrThrow(sessionId);
+        Baggage b = findBaggage(session, baggageId);
+        List<BaggageHistoryView.Entry> entries = b.getHistory().stream()
+                .map(h -> new BaggageHistoryView.Entry(h.timestamp(), h.status(), h.icao(), h.flightId()))
+                .toList();
+        return new BaggageHistoryView(b.getId(), entries);
     }
 
     // Busca la maleta en el grafo activo (pending + assigned) o en el histórico

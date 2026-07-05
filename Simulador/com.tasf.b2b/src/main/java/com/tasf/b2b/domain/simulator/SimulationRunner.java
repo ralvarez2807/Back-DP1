@@ -5,6 +5,7 @@ import com.tasf.b2b.domain.model.graph.componentsgraph.FlightEdge;
 import com.tasf.b2b.domain.model.graph.componentsgraph.STEdge;
 import com.tasf.b2b.domain.model.graph.movable.Baggage;
 import com.tasf.b2b.domain.model.graph.movable.Shipment;
+import com.tasf.b2b.domain.optimizer.alns.BaggageState;
 import com.tasf.b2b.domain.simulator.dto.*;
 import com.tasf.b2b.domain.simulator.event.*;
 
@@ -46,6 +47,8 @@ public class SimulationRunner implements Runnable {
     private final List<com.tasf.b2b.domain.simulator.dto.SlaBreachInfo> slaBreaches;
 
     private volatile boolean running;
+    // Razón legible del colapso, si terminó por eso; null si no colapsó.
+    private volatile String  collapseReason;
 
     // ── Stats de soluciones ALNS ──────────────────────────────────────────────
     private int solutionCount  = 0;
@@ -109,6 +112,7 @@ public class SimulationRunner implements Runnable {
             case FlightDepartureEvent  e -> handleFlightDeparture(e);
             case FlightArrivalEvent    e -> handleFlightArrival(e);
             case FlightCancelledEvent  e -> handleFlightCancelled(e);
+            case FlightScheduleUpdatedEvent e -> handleFlightScheduleUpdated(e);
             case BaggagePickupEvent    e -> handleBaggagePickup(e);
             case NewShipmentEvent      e -> handleNewShipment(e);
             case SlaDeadlineEvent      e -> handleSlaDeadline(e);
@@ -161,6 +165,7 @@ public class SimulationRunner implements Runnable {
             STEdge prev = baggage.getCurrentEdge();
             if (prev != null) prev.release();
             baggage.setCurrentEdge(fe);
+            baggage.recordHistory(clock.now(), "IN_FLIGHT", fe.getFromNode().getIcao(), fe.getIdFlightEdge());
             log("Maleta embarca: " + baggage.getId());
             publisher.publish(new BaggageDepartedDTO(
                     clock.now(),
@@ -205,11 +210,13 @@ public class SimulationRunner implements Runnable {
                 if (waitEdge != null) waitEdge.assign();
                 if (baggage.getExpectedRoute().isEmpty()) {
                     graph.unassignBaggage(baggage);
+                    baggage.recordHistory(clock.now(), "PENDING", fe.getToNode().getIcao(), null);
                     publisher.publish(new BaggagePendingDTO(
                             clock.now(),
                             baggage.getId(),
                             fe.getToNode().getIcao()));
                 } else {
+                    baggage.recordHistory(clock.now(), "WAITING", fe.getToNode().getIcao(), null);
                     publisher.publish(new BaggageArrivedDTO(
                             clock.now(),
                             baggage.getId(),
@@ -231,6 +238,7 @@ public class SimulationRunner implements Runnable {
         Baggage baggage = e.getBaggage();
         deliveredBaggages.add(baggage);
         deliveredIds.add(baggage.getId());
+        baggage.recordHistory(clock.now(), "DELIVERED", e.getDestIcao(), null);
         log("Maleta entregada: " + baggage.getId());
         publisher.publish(new BaggageDeliveredDTO(
                 clock.now(),
@@ -259,6 +267,34 @@ public class SimulationRunner implements Runnable {
         runOptimizationCycle();  // ← Agregar aquí
     }
 
+    // Modifica el horario/capacidad de un schedule recurrente (LE-12). Cancela las
+    // instancias ya expandidas y aún no partidas del schedule viejo (replanifica sus
+    // maletas, LE-27) y registra el nuevo schedule para las próximas expansiones.
+    private void handleFlightScheduleUpdated(FlightScheduleUpdatedEvent e) {
+        String oldId = e.getOldScheduleId();
+        var    newSchedule = e.getNewSchedule();
+        boolean idChanged  = !oldId.equals(newSchedule.getId());
+
+        List<FlightEdge> stale = new ArrayList<>();
+        for (FlightEdge fe : graph.getAllFlightEdges()) {
+            if (!fe.isCancelled()
+                    && fe.getFlightScheduleData().getId().equals(oldId)
+                    && fe.getFromNode().getTimeUtc().isAfter(clock.now())) {
+                stale.add(fe);
+            }
+        }
+
+        if (idChanged) graph.removeScheduledFlight(oldId);
+        graph.addScheduledFlight(newSchedule);
+        log("Schedule actualizado: " + oldId + " → " + newSchedule.getId()
+                + " (" + stale.size() + " instancia(s) futura(s) a replanificar)");
+
+        for (FlightEdge fe : stale) {
+            handleFlightCancelled(new FlightCancelledEvent(
+                    clock.now(), oldId, fe.getFromNode().getTimeUtc(), clock));
+        }
+    }
+
     private void handleNewShipment(NewShipmentEvent e) {
         Shipment shipment = new Shipment(e.getShipmentData());
         graph.addShipment(shipment);
@@ -267,6 +303,7 @@ public class SimulationRunner implements Runnable {
 
         // Programa un chequeo de SLA en el instante del deadline de cada maleta.
         for (Baggage b : shipment.getBaggages()) {
+            b.recordHistory(clock.now(), "PENDING", e.getShipmentData().getOriginAirport().getIcao(), null);
             if (b.getDeadlineUtc() != null) {
                 submit(new SlaDeadlineEvent(b.getDeadlineUtc(), b, clock));
             }
@@ -291,6 +328,17 @@ public class SimulationRunner implements Runnable {
 
         Instant deadline = b.getDeadlineUtc();
         STEdge  cur      = b.getCurrentEdge();
+
+        // Entrega a tiempo aún en curso: el vuelo final ya aterrizó en el destino y
+        // la recogida cae justo en el deadline. El BaggagePickupEvent comparte
+        // instante con este evento en la DelayQueue y puede procesarse después —
+        // no es incumplimiento.
+        if (cur instanceof FlightEdge fe
+                && fe.getToNode().getIcao().equals(b.getDestIcao())
+                && !fe.getToNode().getTimeUtc()
+                      .plus(config.pickupMinutes(), ChronoUnit.MINUTES).isAfter(deadline)) {
+            return;
+        }
 
         String status, location;
         if (cur instanceof FlightEdge fe) {
@@ -344,6 +392,21 @@ public class SimulationRunner implements Runnable {
         slaBreaches.add(info);
 
         log("*** SLA VENCIDO *** " + b.getId() + " @ " + location + " (" + status + ") | " + cause);
+
+        // SLA vencido ES el colapso del negocio, sin importar si la maleta tenía
+        // ruta asignada o iba en vuelo. El CollapseDetector del hilo ALNS solo ve
+        // maletas pendientes (sin ruta); este evento cubre los demás estados y
+        // fija el momento del colapso en el instante exacto del deadline.
+        if (config.collapseOnFailure()) {
+            BaggageState state = new BaggageState(
+                    b.getId(), location, deadline, b.getDestIcao(), deadline);
+            handleCollapseDetected(new CollapseDetectedEvent(
+                    deadline,
+                    new CollapseDetector.CollapseInfo(
+                            CollapseDetector.CollapseReason.DEADLINE_EXCEEDED,
+                            List.of(state), 0),
+                    clock));
+        }
     }
 
     private com.tasf.b2b.domain.simulator.dto.SlaBreachInfo.Leg legOf(FlightEdge fe, String state) {
@@ -362,6 +425,15 @@ public class SimulationRunner implements Runnable {
         for (Map.Entry<Baggage, List<STEdge>> entry : e.getRoutes().entrySet()) {
             Baggage      baggage = entry.getKey();
             List<STEdge> route   = entry.getValue();
+
+            // Solución duplicada: la maleta ya tiene plan vigente (otra solución ALNS
+            // o el fallback genético la asignó mientras este solve estaba en curso).
+            // Aplicarla haría clearExpectedRoute sin liberar los asientos del plan
+            // anterior (reservas huérfanas) y la duplicaría en assignedBaggages.
+            if (!baggage.isUnassigned()) {
+                stale++;
+                continue;
+            }
 
             // Solución obsoleta: el primer vuelo ya partió antes de que llegara la solución.
             // Dejar el baggage en pending para que la siguiente iteración ALNS lo re-enrute.
@@ -412,6 +484,8 @@ public class SimulationRunner implements Runnable {
                 "*** COLAPSO *** maleta=%s | razón=%s | deadline=%s",
                 info.primaryBaggageId(), reasonLabel, info.primaryDeadline()));
 
+        this.collapseReason = reasonLabel;
+
         publisher.publish(new CollapseDetectedDTO(
                 clock.now(), info.reason(), info.primaryBaggageId(),
                 info.primaryDeadline(), info.consecutiveCycles()));
@@ -419,12 +493,15 @@ public class SimulationRunner implements Runnable {
         running = false;
     }
 
+    /** Razón legible del colapso, si terminó por eso; null si no colapsó. */
+    public String getCollapseReason() { return collapseReason; }
+
     private void log(String msg) {
         System.out.printf("[SIM %s] %s%n", clock.now(), msg);
     }
     private void runOptimizationCycle() {
         log("Ejecutando ciclo de optimización...");
-        graph.optimizeAndAssignRoutes();
+        graph.optimizeAndAssignRoutes(config.pickupMinutes());
 
         int pendingCount = graph.getPendingBaggages().size();
         int assignedCount = graph.getAssignedBaggages().size();

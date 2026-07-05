@@ -112,6 +112,7 @@ public class SimulationRunner implements Runnable {
             case FlightDepartureEvent  e -> handleFlightDeparture(e);
             case FlightArrivalEvent    e -> handleFlightArrival(e);
             case FlightCancelledEvent  e -> handleFlightCancelled(e);
+            case FlightScheduleUpdatedEvent e -> handleFlightScheduleUpdated(e);
             case BaggagePickupEvent    e -> handleBaggagePickup(e);
             case NewShipmentEvent      e -> handleNewShipment(e);
             case SlaDeadlineEvent      e -> handleSlaDeadline(e);
@@ -164,6 +165,7 @@ public class SimulationRunner implements Runnable {
             STEdge prev = baggage.getCurrentEdge();
             if (prev != null) prev.release();
             baggage.setCurrentEdge(fe);
+            baggage.recordHistory(clock.now(), "IN_FLIGHT", fe.getFromNode().getIcao(), fe.getIdFlightEdge());
             log("Maleta embarca: " + baggage.getId());
             publisher.publish(new BaggageDepartedDTO(
                     clock.now(),
@@ -208,11 +210,13 @@ public class SimulationRunner implements Runnable {
                 if (waitEdge != null) waitEdge.assign();
                 if (baggage.getExpectedRoute().isEmpty()) {
                     graph.unassignBaggage(baggage);
+                    baggage.recordHistory(clock.now(), "PENDING", fe.getToNode().getIcao(), null);
                     publisher.publish(new BaggagePendingDTO(
                             clock.now(),
                             baggage.getId(),
                             fe.getToNode().getIcao()));
                 } else {
+                    baggage.recordHistory(clock.now(), "WAITING", fe.getToNode().getIcao(), null);
                     publisher.publish(new BaggageArrivedDTO(
                             clock.now(),
                             baggage.getId(),
@@ -234,6 +238,7 @@ public class SimulationRunner implements Runnable {
         Baggage baggage = e.getBaggage();
         deliveredBaggages.add(baggage);
         deliveredIds.add(baggage.getId());
+        baggage.recordHistory(clock.now(), "DELIVERED", e.getDestIcao(), null);
         log("Maleta entregada: " + baggage.getId());
         publisher.publish(new BaggageDeliveredDTO(
                 clock.now(),
@@ -262,6 +267,34 @@ public class SimulationRunner implements Runnable {
         runOptimizationCycle();  // ← Agregar aquí
     }
 
+    // Modifica el horario/capacidad de un schedule recurrente (LE-12). Cancela las
+    // instancias ya expandidas y aún no partidas del schedule viejo (replanifica sus
+    // maletas, LE-27) y registra el nuevo schedule para las próximas expansiones.
+    private void handleFlightScheduleUpdated(FlightScheduleUpdatedEvent e) {
+        String oldId = e.getOldScheduleId();
+        var    newSchedule = e.getNewSchedule();
+        boolean idChanged  = !oldId.equals(newSchedule.getId());
+
+        List<FlightEdge> stale = new ArrayList<>();
+        for (FlightEdge fe : graph.getAllFlightEdges()) {
+            if (!fe.isCancelled()
+                    && fe.getFlightScheduleData().getId().equals(oldId)
+                    && fe.getFromNode().getTimeUtc().isAfter(clock.now())) {
+                stale.add(fe);
+            }
+        }
+
+        if (idChanged) graph.removeScheduledFlight(oldId);
+        graph.addScheduledFlight(newSchedule);
+        log("Schedule actualizado: " + oldId + " → " + newSchedule.getId()
+                + " (" + stale.size() + " instancia(s) futura(s) a replanificar)");
+
+        for (FlightEdge fe : stale) {
+            handleFlightCancelled(new FlightCancelledEvent(
+                    clock.now(), oldId, fe.getFromNode().getTimeUtc(), clock));
+        }
+    }
+
     private void handleNewShipment(NewShipmentEvent e) {
         Shipment shipment = new Shipment(e.getShipmentData());
         graph.addShipment(shipment);
@@ -270,6 +303,7 @@ public class SimulationRunner implements Runnable {
 
         // Programa un chequeo de SLA en el instante del deadline de cada maleta.
         for (Baggage b : shipment.getBaggages()) {
+            b.recordHistory(clock.now(), "PENDING", e.getShipmentData().getOriginAirport().getIcao(), null);
             if (b.getDeadlineUtc() != null) {
                 submit(new SlaDeadlineEvent(b.getDeadlineUtc(), b, clock));
             }

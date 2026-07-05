@@ -355,14 +355,26 @@ public class RunSimulationUseCase implements SimulationControlPort {
         SpaceTimeGraph    graph   = session.getGraph();
         SimulationClock   clock   = runner.getClock();
 
-        // Selección de los FlightEdge objetivo. Solo lectura del grafo (se acepta la
-        // inconsistencia de microsegundos); la mutación ocurre en el hilo del runner
-        // vía runner.submit(FlightCancelledEvent), que es thread-safe.
+        // CANCELLATION se resuelve por scheduleId (sin fecha): el backend decide si
+        // apunta a la instancia de hoy o de mañana según la regla de 1h simulada
+        // antes de la partida. No requiere que el FlightEdge ya exista en el grafo:
+        // SpaceTimeGraph.cancelFlight encola la cancelación si cae fuera del horizonte.
+        if (cmd.kind() == DisruptionCommand.Kind.CANCELLATION) {
+            String resolvedFlightId = resolveAndCancelBySchedule(cmd.scheduleId(), runner, clock);
+            System.out.printf("[SIM] Disrupción CANCELLATION en sesión %s → %s%n", sessionId, resolvedFlightId);
+            return List.of(resolvedFlightId);
+        }
+
+        // AVERIA, SEGMENT_BLOCK, NODE_BLOCK — sin cambios: apuntan a instancias ya
+        // expandidas en el grafo (flightId con fecha, o ventana origen/destino).
+        // Solo lectura del grafo (se acepta la inconsistencia de microsegundos); la
+        // mutación ocurre en el hilo del runner vía runner.submit(FlightCancelledEvent).
         List<FlightEdge> targets = new ArrayList<>();
         for (FlightEdge fe : graph.getAllFlightEdges()) {
             if (fe.isCancelled()) continue;
             boolean match = switch (cmd.kind()) {
-                case CANCELLATION, AVERIA ->
+                case CANCELLATION -> false; // ya manejado arriba
+                case AVERIA ->
                         cmd.flightId() != null && fe.getIdFlightEdge().equals(cmd.flightId());
                 case SEGMENT_BLOCK ->
                         fe.getFromNode().getIcao().equals(cmd.originIcao())
@@ -390,6 +402,38 @@ public class RunSimulationUseCase implements SimulationControlPort {
         System.out.printf("[SIM] Disrupción %s en sesión %s → %d vuelo(s) afectado(s)%n",
                 cmd.kind(), sessionId, affected.size());
         return affected;
+    }
+
+    // Resuelve a qué instancia concreta (hoy o mañana) apunta la cancelación de un
+    // scheduleId, según la regla: si faltan más de 1h simulada para la partida de
+    // hoy, se cancela la de hoy; si ya se pasó ese corte, se cancela la de mañana.
+    // Encola en SpaceTimeGraph.cancelFlight si la instancia aún no está expandida.
+    private String resolveAndCancelBySchedule(String scheduleId, SimulationRunner runner, SimulationClock clock) {
+        FlightScheduleDataDTO schedule = flights.stream()
+                .filter(f -> f.getId().equals(scheduleId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Vuelo (schedule) no encontrado: " + scheduleId));
+
+        AirportDataDTO origin  = schedule.getOriginAirport();
+        Instant        simNow  = clock.now();
+        Instant        todayUtc = simNow.truncatedTo(java.time.temporal.ChronoUnit.DAYS);
+
+        Instant depToday = com.tasf.b2b.domain.util.TimeUtils.combineDateAndLocalTime(
+                todayUtc, schedule.getDepartureTimeLocal(), origin.getGmtOffset());
+        Instant cutoff = depToday.minus(1, java.time.temporal.ChronoUnit.HOURS);
+
+        Instant target = !simNow.isAfter(cutoff)
+                ? depToday
+                : com.tasf.b2b.domain.util.TimeUtils.combineDateAndLocalTime(
+                        todayUtc.plus(1, java.time.temporal.ChronoUnit.DAYS),
+                        schedule.getDepartureTimeLocal(), origin.getGmtOffset());
+
+        runner.submit(new FlightCancelledEvent(clock.now(), scheduleId, target, clock));
+
+        // Mismo formato que FlightEdge.idFlightEdge: scheduleId + fecha LOCAL (origen) de la partida.
+        String datePart = com.tasf.b2b.domain.util.TimeUtils.utcToLocal(target, origin.getGmtOffset())
+                .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        return scheduleId + "-" + datePart;
     }
 
     private static boolean inWindow(Instant t, Instant from, Instant to) {

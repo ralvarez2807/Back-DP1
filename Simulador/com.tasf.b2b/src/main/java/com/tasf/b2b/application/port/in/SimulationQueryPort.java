@@ -1,5 +1,6 @@
 package com.tasf.b2b.application.port.in;
 
+import com.tasf.b2b.application.dto.BaggageHistoryView;
 import com.tasf.b2b.application.dto.BaggageRouteView;
 import com.tasf.b2b.application.dto.BaggageView;
 import com.tasf.b2b.application.dto.DashboardView;
@@ -64,6 +65,13 @@ public interface SimulationQueryPort {
      * @throws IllegalArgumentException si la sesión o la maleta no existen
      */
     BaggageRouteView getBaggageRoute(String sessionId, String baggageId);
+
+    /**
+     * Historial de transiciones de estado de una maleta, con timestamp (LE-45).
+     *
+     * @throws IllegalArgumentException si la sesión o la maleta no existen
+     */
+    BaggageHistoryView getBaggageHistory(String sessionId, String baggageId);
 
     /**
      * Lista de todos los vuelos del horizonte activo con nivel de ocupación.

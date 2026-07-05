@@ -179,11 +179,15 @@ public class SimulationController {
     /**
      * Body del POST /simulations/:id/disruptions.
      * kind: CANCELLATION | AVERIA | SEGMENT_BLOCK | NODE_BLOCK
+     *
+     * CANCELLATION usa scheduleId (horario recurrente sin fecha, ORIG-DEST-HH:mm):
+     * el backend resuelve si cancela la instancia de hoy o de mañana según la regla
+     * de 1h simulada antes de la partida. AVERIA sigue usando flightId (con fecha).
      */
-    record DisruptionRequest(String kind, String flightId, String originIcao,
+    record DisruptionRequest(String kind, String scheduleId, String flightId, String originIcao,
                              String destIcao, Instant fromUtc, Instant toUtc, int severity) {}
 
-    record DisruptionResponse(int affectedFlights, List<String> flightIds) {}
+    record DisruptionResponse(String resolvedFlightId, int affectedFlights, List<String> flightIds) {}
 
     /**
      * Inyecta una circunstancia (cancelación / avería / bloqueo de tramo o nodo).
@@ -193,11 +197,42 @@ public class SimulationController {
     @PostMapping("/{id}/disruptions")
     public DisruptionResponse injectDisruption(@PathVariable String id,
                                                @RequestBody DisruptionRequest req) {
+        DisruptionCommand.Kind kind = DisruptionCommand.Kind.valueOf(req.kind());
+        if (kind == DisruptionCommand.Kind.CANCELLATION
+                && (req.scheduleId() == null || req.scheduleId().isBlank())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "Campo requerido: scheduleId");
+        }
+
         DisruptionCommand cmd = new DisruptionCommand(
-                DisruptionCommand.Kind.valueOf(req.kind()),
-                req.flightId(), req.originIcao(), req.destIcao(),
+                kind, req.scheduleId(), req.flightId(), req.originIcao(), req.destIcao(),
                 req.fromUtc(), req.toUtc(), req.severity());
         List<String> affected = controlPort.injectDisruption(id, cmd);
-        return new DisruptionResponse(affected.size(), affected);
+        String resolvedFlightId = kind == DisruptionCommand.Kind.CANCELLATION && !affected.isEmpty()
+                ? affected.get(0) : null;
+        return new DisruptionResponse(resolvedFlightId, affected.size(), affected);
+    }
+
+    // ── Disrupciones en lote (LE-70, LE-71: cancelación masiva) ───────────────
+
+    record BulkDisruptionRequest(List<DisruptionRequest> disruptions) {}
+    record BulkDisruptionResponse(List<DisruptionResponse> results) {}
+
+    /**
+     * Inyecta una lista de disrupciones en un solo request (cancelación masiva).
+     * Sin generador aleatorio server-side: el operario elige manualmente cuáles
+     * cancelar (el front puede armar la lista con una selección al azar si quiere).
+     */
+    @PostMapping("/{id}/disruptions/bulk")
+    public BulkDisruptionResponse injectDisruptionsBulk(@PathVariable String id,
+                                                        @RequestBody BulkDisruptionRequest req) {
+        if (req.disruptions() == null || req.disruptions().isEmpty())
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "Campo requerido: disruptions (no vacío)");
+
+        List<DisruptionResponse> results = req.disruptions().stream()
+                .map(r -> injectDisruption(id, r))
+                .toList();
+        return new BulkDisruptionResponse(results);
     }
 }

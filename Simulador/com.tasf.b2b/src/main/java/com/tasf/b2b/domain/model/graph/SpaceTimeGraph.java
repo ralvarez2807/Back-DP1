@@ -111,6 +111,13 @@ public class SpaceTimeGraph {
         this.flightsSchedule.put(flightScheduleData.getId(), flightScheduleData); //Datos fijos de los flight diarios
     }
 
+    // Retira un horario recurrente: no se expandirán más días para este id (LE-12).
+    // Las FlightEdge ya expandidas para este id no se tocan aquí — cancélalas aparte
+    // con cancelFlight si corresponde.
+    public void removeScheduledFlight(String flightScheduleId) {
+        this.flightsSchedule.remove(flightScheduleId);
+    }
+
     //TODO: hacer un registro de una lista de programaciones de vuelo
 
     //--Expansión y reducción del grafo diario -----------

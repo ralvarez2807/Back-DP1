@@ -1,5 +1,6 @@
 package com.tasf.b2b.presentation.rest;
 
+import com.tasf.b2b.application.dto.BaggageHistoryView;
 import com.tasf.b2b.application.dto.BaggageRouteView;
 import com.tasf.b2b.application.dto.BaggageView;
 import com.tasf.b2b.application.port.in.SimulationQueryPort;
@@ -100,5 +101,30 @@ public class TrackingController {
     public BaggageRouteResponse getBaggageRoute(@PathVariable String id,
                                                 @PathVariable String baggageId) {
         return BaggageRouteResponse.from(queryPort.getBaggageRoute(id, baggageId));
+    }
+
+    // ── Historial de estados (LE-45) ──────────────────────────────────────────
+
+    record HistoryEntryResponse(Instant timestamp, String status, String icao, String flightId) {
+        static HistoryEntryResponse from(BaggageHistoryView.Entry e) {
+            return new HistoryEntryResponse(e.timestamp(), e.status(), e.icao(), e.flightId());
+        }
+    }
+
+    record BaggageHistoryResponse(String baggageId, List<HistoryEntryResponse> entries) {
+        static BaggageHistoryResponse from(BaggageHistoryView v) {
+            return new BaggageHistoryResponse(v.baggageId(),
+                    v.entries().stream().map(HistoryEntryResponse::from).toList());
+        }
+    }
+
+    /**
+     * Log de transiciones de estado de una maleta con timestamp (LE-45).
+     * GET /api/v1/simulations/:id/baggage/:baggageId/history
+     */
+    @GetMapping("/{id}/baggage/{baggageId}/history")
+    public BaggageHistoryResponse getBaggageHistory(@PathVariable String id,
+                                                    @PathVariable String baggageId) {
+        return BaggageHistoryResponse.from(queryPort.getBaggageHistory(id, baggageId));
     }
 }

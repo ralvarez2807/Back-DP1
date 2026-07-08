@@ -301,6 +301,13 @@ public class SpaceTimeGraph {
             }
         }
 
+        // Purga adicional de flightIndex por fecha: los vuelos cancelados ya no están en
+        // adjEdges (se sacaron en cancelFlight para no ser ruteables), así que el barrido
+        // de arriba no los alcanza. Sin esto quedarían huérfanos en flightIndex para siempre.
+        for (TreeMap<Instant, FlightEdge> fTimeline : this.flightIndex.values()) {
+            fTimeline.headMap(newMarginLimit).clear();
+        }
+
         // Actualizar el estado del horizonte inferior
         this.marginLowerCompleted = newMarginLimit;
     }
@@ -333,6 +340,10 @@ public class SpaceTimeGraph {
             FlightEdge edgeToRemove = innerMap.get(depTimeUtc);
 
             if(edgeToRemove != null){
+                //Caso 5: el vuelo ya se canceló anteriormente — se detecta por el flag,
+                //ya que ahora el FlightEdge se mantiene en flightIndex (ver más abajo).
+                if (edgeToRemove.isCancelled()) return false;
+
                 //Se busca el nodo del que parte
                 STNode fromNode = edgeToRemove.getFromNode();
                 //Se busca los vuelos que salen de este
@@ -341,23 +352,24 @@ public class SpaceTimeGraph {
                 if (edges != null) {
                     //Caso 6: El vuelo sí se puede cancelar
                     edgeToRemove.setCancelled(true);
-                    //Se remueve de adjEdges
+                    //Se remueve de adjEdges: ya no es candidato para rutear (ALNS/genético
+                    //ya filtran también por isCancelled(), pero esto lo saca de raíz del BFS/DFS).
                     edges.remove(edgeToRemove);
-                    //Se remueve de flighIndex
-                    innerMap.remove(depTimeUtc);
+                    //OJO: NO se remueve de flightIndex — debe seguir siendo consultable
+                    //(GET /flights, snapshot, dashboard) para que el front sepa que está
+                    //cancelado, igual que cualquier otro vuelo real que solo vive en RAM.
+                    //reduceGraph() se encarga de purgarlo cuando salga del horizonte.
                     return true;
                 }
                 else{
-                    //Caso 5: El vuelo ya se canceló anteriormente (ya no se encuentra en adjEdges)
-                    //ERROR: pero sí se encuentra en flightIndex, no debería
                     throw new IllegalArgumentException(
-                            "Vuelo mal eliminado de flightIndex, sí eliminado de adjEdged: " +
+                            "Vuelo sin lista de adyacencia para su nodo de origen: " +
                                     edgeToRemove.getIdFlightEdge());
 
                 }
             }
             else{
-                //Caso 5: El vuelo ya se canceló anteriormente (ya no se encuentra en flightIndex)
+                //Caso 5: no existe un FlightEdge expandido para esa fecha (aún no se expandió o ya salió del horizonte)
                 return false;
             }
         }else {

@@ -175,10 +175,18 @@ class SpaceTimeGraphTest {
         boolean result = graph.cancelFlight(key, DEP_JAN2_UTC);
 
         assertTrue(result);
-        // Ya no debe aparecer en getAllFlightEdges
-        boolean aun_presente = graph.getAllFlightEdges().stream()
-                .anyMatch(fe -> fe.getFromNode().getTimeUtc().equals(DEP_JAN2_UTC));
-        assertFalse(aun_presente);
+
+        // Sigue "vivo" en RAM (getAllFlightEdges) para que la API/front lo pueda
+        // seguir consultando y mostrar como cancelado — solo se saca de la
+        // adyacencia para que deje de ser ruteable.
+        FlightEdge edge = graph.getAllFlightEdges().stream()
+                .filter(fe -> fe.getFromNode().getTimeUtc().equals(DEP_JAN2_UTC))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("El vuelo cancelado debería seguir en getAllFlightEdges"));
+        assertTrue(edge.isCancelled());
+
+        boolean enAdyacencia = graph.getEdgesFrom(edge.getFromNode()).contains(edge);
+        assertFalse(enAdyacencia);
     }
 
     @Test

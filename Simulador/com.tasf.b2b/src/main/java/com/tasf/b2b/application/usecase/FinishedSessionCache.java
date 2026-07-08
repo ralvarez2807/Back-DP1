@@ -4,20 +4,24 @@ import com.tasf.b2b.application.dto.FinishedSessionView;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Guarda en memoria el resultado final de las sesiones que ya terminaron
- * (fin normal, colapso o stop manual), el tiempo justo para que el front
- * pueda consultarlo tras reconectar. No hay persistencia en BD: pasado el
- * TTL, el resultado se descarta solo.
+ * Guarda en memoria la última solución conocida de cada sesión: se actualiza
+ * periódicamente mientras la sesión corre (ver RunSimulationUseCase, hilo
+ * "solution-snapshot-*") y con el resultado definitivo cuando termina (fin
+ * normal, colapso o stop manual). Así, si la ejecución se corta de forma
+ * abrupta (crash, kill) sin pasar por un cierre prolijo, la última
+ * planificación exitosa igual queda disponible por API. No hay persistencia
+ * en BD: pasado el TTL, el resultado se descarta solo.
  *
  * Purga perezosa (al guardar uno nuevo y al leer uno vencido) — no hace
  * falta un hilo de limpieza aparte para un TTL tan corto.
  */
 public class FinishedSessionCache {
 
-    private static final Duration TTL = Duration.ofMinutes(3);
+    private static final Duration TTL = Duration.ofMinutes(5);
 
     private record Entry(FinishedSessionView view, Instant expiresAt) {}
 
@@ -39,6 +43,17 @@ public class FinishedSessionCache {
             throw new IllegalArgumentException("Resultado no encontrado: " + sessionId);
         }
         return e.view();
+    }
+
+    /**
+     * Última vista cacheada para la sesión, si existe y no venció — no arroja.
+     * Usado al colapsar: permite conservar las rutas del último snapshot bueno
+     * (anterior a la falla) en vez de recalcular con el estado que ya colapsó.
+     */
+    public Optional<FinishedSessionView> peek(String sessionId) {
+        Entry e = entries.get(sessionId);
+        if (e == null || Instant.now().isAfter(e.expiresAt())) return Optional.empty();
+        return Optional.of(e.view());
     }
 
     private void purgeExpired() {

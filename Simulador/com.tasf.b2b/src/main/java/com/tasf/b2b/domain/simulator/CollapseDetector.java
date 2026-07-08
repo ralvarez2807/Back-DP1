@@ -18,10 +18,12 @@ import java.util.stream.Collectors;
  *
  * NO_VIABLE_ROUTE: el mismo conjunto de baggages queda sin ruta durante
  *   CYCLE_THRESHOLD ciclos consecutivos — no existe ningún camino posible en el grafo.
+ *   Con CYCLE_THRESHOLD=1, cualquier ciclo de ALNS que deje una maleta sin rutear
+ *   ya cuenta como colapso (una sola falla de planificación, sin tolerancia).
  */
 public class CollapseDetector {
 
-    private static final int CYCLE_THRESHOLD = 5;
+    private static final int CYCLE_THRESHOLD = 1;
 
     private Set<String> lastUnroutedIds  = Set.of();
     private int         consecutiveCycles = 0;

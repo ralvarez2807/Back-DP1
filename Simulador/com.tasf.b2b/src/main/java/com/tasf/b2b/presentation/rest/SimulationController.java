@@ -164,10 +164,17 @@ public class SimulationController {
     }
 
     /**
-     * Resultado final de una sesión que ya terminó (fin normal, colapso o stop):
-     * status, razón del colapso si aplica, y la última ruta asignada por maleta.
-     * Solo disponible hasta 3 minutos después de terminar — pasado ese tiempo,
-     * o si el id nunca existió, o si la sesión sigue corriendo, responde 404.
+     * Última solución conocida de una sesión: status, razón del colapso si aplica,
+     * y la última ruta asignada por maleta.
+     *
+     * Se actualiza sola cada ~3s mientras la sesión corre (status "RUNNING"), así
+     * que también responde para una sesión activa o para una que se cortó de golpe
+     * (crash, kill) sin pasar por un cierre prolijo — siempre se puede pedir la
+     * última planificación exitosa. Al terminar de forma normal queda el status
+     * definitivo (COMPLETED/COLLAPSED/STOPPED).
+     *
+     * Disponible hasta 5 minutos después del último snapshot — pasado ese tiempo,
+     * o si el id nunca existió, responde 404.
      */
     @GetMapping("/{id}/result")
     public FinishedSessionView getResult(@PathVariable String id) {

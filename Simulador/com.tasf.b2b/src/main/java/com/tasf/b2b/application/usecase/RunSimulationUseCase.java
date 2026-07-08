@@ -1,5 +1,6 @@
 package com.tasf.b2b.application.usecase;
 
+import com.tasf.b2b.application.dto.BaggageRouteView;
 import com.tasf.b2b.application.dto.FinishedSessionView;
 import com.tasf.b2b.application.port.in.DisruptionCommand;
 import com.tasf.b2b.application.port.in.InjectShipmentCommand;
@@ -208,9 +209,21 @@ public class RunSimulationUseCase implements SimulationControlPort {
                         ? SimulationSession.SimStatus.COLLAPSED
                         : SimulationSession.SimStatus.COMPLETED;
                 session.setStatus(finalStatus);
+
+                // Al colapsar, el estado actual de las maletas ya refleja la falla
+                // (deadline vencido o maleta sin ruta). Se prefiere el último
+                // snapshot bueno guardado por el hilo solution-snapshot (previo a
+                // la falla) para que "assignedRoutes" siga siendo la última
+                // planificación exitosa, no la que disparó el colapso.
+                List<BaggageRouteView> assignedRoutes = finalStatus == SimulationSession.SimStatus.COLLAPSED
+                        ? finishedSessionCache.peek(session.getId())
+                                .map(FinishedSessionView::assignedRoutes)
+                                .orElseGet(() -> query.buildAllRoutes(session)) // colapsó antes del primer snapshot
+                        : query.buildAllRoutes(session);
+
                 finishedSessionCache.record(new FinishedSessionView(
                         session.getId(), session.getUsername(), finalStatus.name(),
-                        Instant.now(), collapseReason, query.buildAllRoutes(session)));
+                        Instant.now(), collapseReason, assignedRoutes));
             }
             registry.remove(sessionId); // liberar recursos del registry al terminar
         }, "simulation-runner-" + sessionId);
@@ -228,6 +241,15 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 "cancellation-injector-" + sessionId);
         cancellationThread.setDaemon(true);
 
+        // Snapshot periódico (reloj real, no de simulación) de la última solución
+        // conocida. Así, si el proceso se corta de golpe (crash, kill -9) sin pasar
+        // por el cierre prolijo de simThread ni por stop(), la última planificación
+        // exitosa igual quedó guardada en finishedSessionCache (TTL 5 min) y se
+        // puede pedir por GET /simulations/:id/result.
+        Thread solutionSnapshotThread = new Thread(
+                () -> runSolutionSnapshotLoop(session), "solution-snapshot-" + sessionId);
+        solutionSnapshotThread.setDaemon(true);
+
         // ── 9. Hilos de optimización (daemon) ─────────────────────────────────
         // isActive=true → el hilo envía RouteSolutionEvent al runner (afecta la simulación)
         // isActive=false → solo evalúa métricas, no modifica nada (modo comparación)
@@ -239,6 +261,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
         allThreads.add(simThread);
         allThreads.add(shipmentThread);
         allThreads.add(cancellationThread);
+        allThreads.add(solutionSnapshotThread);
         allThreads.addAll(optimizerThreads);
         session.setAllThreads(allThreads);
 
@@ -249,6 +272,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
         // ── 12. Arranque ──────────────────────────────────────────────────────
         shipmentThread.start();
         cancellationThread.start();
+        solutionSnapshotThread.start();
         optimizerThreads.forEach(Thread::start);
         simThread.start(); // último: el grafo ya tiene vuelos en cola antes de que ALNS empiece
 
@@ -256,6 +280,30 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 sessionId, simStart, simEnd, speedFactor);
 
         return sessionId;
+    }
+
+    // ── Snapshot periódico de la última solución ─────────────────────────────
+
+    /** Cada cuánto (reloj real) se refresca la última solución conocida. */
+    private static final long SOLUTION_SNAPSHOT_INTERVAL_MS = 3000;
+
+    private void runSolutionSnapshotLoop(SimulationSession session) {
+        SimulationRunner runner = session.getRunner();
+        while (runner.isRunning()) {
+            try {
+                Thread.sleep(SOLUTION_SNAPSHOT_INTERVAL_MS);
+                // Se re-chequea tras dormir: evita pisar con "RUNNING" el registro
+                // definitivo (COMPLETED/COLLAPSED/STOPPED) si el runner terminó
+                // justo mientras este hilo dormía.
+                if (!runner.isRunning()) return;
+                finishedSessionCache.record(new FinishedSessionView(
+                        session.getId(), session.getUsername(), "RUNNING",
+                        Instant.now(), null, query.buildAllRoutes(session)));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     // ── Operación Día a Día ─────────────────────────────────────────────────────

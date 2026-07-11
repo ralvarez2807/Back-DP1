@@ -12,7 +12,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Detecta el colapso del planificador en dos condiciones:
+ * Detecta el colapso del planificador en tres condiciones:
  *
  * DEADLINE_EXCEEDED: uno o más baggages pendientes superaron su deadline sin ser asignados.
  *
@@ -20,6 +20,10 @@ import java.util.stream.Collectors;
  *   CYCLE_THRESHOLD ciclos consecutivos — no existe ningún camino posible en el grafo.
  *   Con CYCLE_THRESHOLD=1, cualquier ciclo de ALNS que deje una maleta sin rutear
  *   ya cuenta como colapso (una sola falla de planificación, sin tolerancia).
+ *
+ * WAREHOUSE_OVERFLOW: el número de maletas físicamente esperando en un almacén
+ *   supera su capacidad (llega al 101 %). Lo dispara el SimulationRunner al detectar
+ *   el desborde, no este detector (que solo ve el estado del planificador).
  */
 public class CollapseDetector {
 
@@ -28,7 +32,7 @@ public class CollapseDetector {
     private Set<String> lastUnroutedIds  = Set.of();
     private int         consecutiveCycles = 0;
 
-    public enum CollapseReason { DEADLINE_EXCEEDED, NO_VIABLE_ROUTE }
+    public enum CollapseReason { DEADLINE_EXCEEDED, NO_VIABLE_ROUTE, WAREHOUSE_OVERFLOW }
 
     public record CollapseInfo(
             CollapseReason     reason,

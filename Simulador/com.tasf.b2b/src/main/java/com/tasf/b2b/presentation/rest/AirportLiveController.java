@@ -34,16 +34,28 @@ public class AirportLiveController {
         }
     }
 
+    record InboundBaggageResponse(
+            String baggageId,
+            String shipmentId,
+            String destIcao) {
+
+        static InboundBaggageResponse from(AirportLiveView.InboundBaggage b) {
+            return new InboundBaggageResponse(b.baggageId(), b.shipmentId(), b.destIcao());
+        }
+    }
+
     record InboundFlightResponse(
-            String       flightId,
-            String       fromIcao,
-            Instant      arrTime,
-            int          baggageCount,
-            List<String> shipmentIds) {
+            String                       flightId,
+            String                       fromIcao,
+            Instant                      arrTime,
+            int                          baggageCount,
+            List<String>                 shipmentIds,
+            List<InboundBaggageResponse> baggages) {
 
         static InboundFlightResponse from(AirportLiveView.InboundFlight f) {
             return new InboundFlightResponse(f.flightId(), f.fromIcao(), f.arrTime(),
-                    f.baggageCount(), f.shipmentIds());
+                    f.baggageCount(), f.shipmentIds(),
+                    f.baggages().stream().map(InboundBaggageResponse::from).toList());
         }
     }
 
@@ -88,11 +100,16 @@ public class AirportLiveController {
             String  destIcao,
             Instant deadlineUtc,
             String  nextFlightId,
-            Instant nextDepTime) {
+            Instant nextDepTime,
+            Instant arrivedAt,
+            Instant readyAt,
+            boolean awaitingPickup,
+            Instant pickupAt) {
 
         static TransitBaggageResponse from(AirportLiveView.TransitBaggage b) {
             return new TransitBaggageResponse(b.baggageId(), b.shipmentId(), b.destIcao(),
-                    b.deadlineUtc(), b.nextFlightId(), b.nextDepTime());
+                    b.deadlineUtc(), b.nextFlightId(), b.nextDepTime(),
+                    b.arrivedAt(), b.readyAt(), b.awaitingPickup(), b.pickupAt());
         }
     }
 

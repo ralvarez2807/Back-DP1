@@ -12,12 +12,18 @@ public record AirportLiveView(
         double  occupancyPct,
         String  occupancyLevel) {
 
+    public record InboundBaggage(
+            String baggageId,
+            String shipmentId,
+            String destIcao) {}
+
     public record InboundFlight(
-            String       flightId,
-            String       fromIcao,
-            Instant      arrTime,
-            int          baggageCount,
-            List<String> shipmentIds) {}
+            String                flightId,
+            String                fromIcao,
+            Instant               arrTime,
+            int                   baggageCount,
+            List<String>          shipmentIds,
+            List<InboundBaggage>  baggages) {}
 
     public record OutboundFlight(
             String       flightId,
@@ -31,8 +37,12 @@ public record AirportLiveView(
             String  shipmentId,
             String  destIcao,
             Instant deadlineUtc,
-            String  nextFlightId,  // null si PENDING
-            Instant nextDepTime) {} // null si PENDING
+            String  nextFlightId,   // null si PENDING
+            Instant nextDepTime,    // null si PENDING
+            Instant arrivedAt,      // llegó al almacén (última entrada de historial en este ICAO)
+            Instant readyAt,        // fin de la ventana de conexión: arrivedAt + minConnectionMinutes
+            boolean awaitingPickup, // true = llegó a su destino final y espera recojo del pasajero
+            Instant pickupAt) {}    // instante en que se recogerá (y descontará del almacén)
 
     public record InboundView(
             String              icao,

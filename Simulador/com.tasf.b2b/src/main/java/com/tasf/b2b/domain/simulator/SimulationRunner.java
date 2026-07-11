@@ -3,6 +3,8 @@ package com.tasf.b2b.domain.simulator;
 import com.tasf.b2b.domain.model.graph.SpaceTimeGraph;
 import com.tasf.b2b.domain.model.graph.componentsgraph.FlightEdge;
 import com.tasf.b2b.domain.model.graph.componentsgraph.STEdge;
+import com.tasf.b2b.domain.model.graph.componentsgraph.WaitEdge;
+import com.tasf.b2b.domain.model.graph.immovable.AirportDataDTO;
 import com.tasf.b2b.domain.model.graph.movable.Baggage;
 import com.tasf.b2b.domain.model.graph.movable.Shipment;
 import com.tasf.b2b.domain.optimizer.alns.BaggageState;
@@ -43,6 +45,15 @@ public class SimulationRunner implements Runnable {
     private final List<Baggage> deliveredBaggages;
     // IDs entregados para chequeo O(1) en el evento de deadline (SLA).
     private final Set<String>   deliveredIds;
+
+    // Maletas que llegaron a su destino final y esperan la ventana de recojo
+    // (pickupMinutes) antes de ser entregadas al pasajero. Durante esa ventana siguen
+    // ocupando físicamente el almacén (cuentan en la ocupación) — se retiran al pickup.
+    // Keyed by baggageId para remoción O(1) en handleBaggagePickup.
+    public record PickupWaiting(Baggage baggage, String icao, Instant pickupAt) {}
+    // ConcurrentHashMap: lo escribe el hilo del runner y lo lee el hilo de consultas
+    // (getAirportTransit / getAirports) — evita ConcurrentModificationException al copiar.
+    private final Map<String, PickupWaiting> awaitingPickup = new java.util.concurrent.ConcurrentHashMap<>();
     // Foto forense de cada incumplimiento de SLA, en orden de ocurrencia.
     private final List<com.tasf.b2b.domain.simulator.dto.SlaBreachInfo> slaBreaches;
 
@@ -202,6 +213,11 @@ public class SimulationRunner implements Runnable {
                 graph.getAssignedBaggages().remove(baggage);
                 Instant pickupTime = fe.getToNode().getTimeUtc()
                         .plus(config.pickupMinutes(), ChronoUnit.MINUTES);
+                // Llegó a destino final pero aún NO se entrega: espera la ventana de
+                // recojo. Sigue ocupando almacén hasta el BaggagePickupEvent.
+                awaitingPickup.put(baggage.getId(),
+                        new PickupWaiting(baggage, fe.getToNode().getIcao(), pickupTime));
+                baggage.recordHistory(clock.now(), "AWAITING_PICKUP", fe.getToNode().getIcao(), null);
                 log("Maleta en recogida: " + baggage.getId() + " → entrega a las " + pickupTime);
                 submit(new BaggagePickupEvent(pickupTime, baggage, fe.getToNode().getIcao(), clock));
             } else {
@@ -231,11 +247,16 @@ public class SimulationRunner implements Runnable {
                 fe.getIdFlightEdge(),
                 fe.getToNode().getIcao(),
                 arrivedCount));
+
+        // Las maletas que aterrizaron entraron al almacén de destino: si con ellas se
+        // supera la capacidad, el almacén se desborda → colapso.
+        checkWarehouseOverflow(fe.getToNode().getIcao());
     }
 
 
     private void handleBaggagePickup(BaggagePickupEvent e) {
         Baggage baggage = e.getBaggage();
+        awaitingPickup.remove(baggage.getId());   // termina la ventana de recojo
         deliveredBaggages.add(baggage);
         deliveredIds.add(baggage.getId());
         baggage.recordHistory(clock.now(), "DELIVERED", e.getDestIcao(), null);
@@ -319,6 +340,10 @@ public class SimulationRunner implements Runnable {
                 e.getShipmentData().getOriginAirport().getIcao(),
                 e.getShipmentData().getDestAirport().getIcao(),
                 shipment.getDeadlineUtc()));
+
+        // El nuevo envío deposita sus maletas en el almacén de origen: comprobar
+        // que no lo desborde.
+        checkWarehouseOverflow(e.getShipmentData().getOriginAirport().getIcao());
     }
 
     // Dispara en el deadline de una maleta: si no llegó, captura la foto forense.
@@ -471,14 +496,59 @@ public class SimulationRunner implements Runnable {
                 applied, e.getUnroutedCount(), e.getAlnsScore()));
     }
 
+    // Colapso por desborde de almacén: si el número de maletas físicamente esperando
+    // en un aeropuerto supera su capacidad (101 %+), el almacén se desborda y eso es un
+    // colapso operativo — igual que un SLA vencido. Solo aplica cuando el escenario
+    // detecta colapsos (collapseOnFailure); "día a día" no colapsa.
+    private void checkWarehouseOverflow(String icao) {
+        if (!config.collapseOnFailure()) return;
+        if (icao == null) return;
+
+        AirportDataDTO airport = graph.getAirport(icao);
+        if (airport == null) return;
+        int capacity = airport.getCapacity();
+        if (capacity <= 0) return;
+
+        // Carga = maletas cuyo edge actual es un WaitEdge en este aeropuerto
+        // (WAITING + PENDING físicamente en almacén; IN_FLIGHT y DELIVERED no ocupan)
+        // MÁS las que esperan recojo en su destino final (ocupan hasta el pickup).
+        int load = 0;
+        for (Baggage b : graph.getPendingBaggages()) {
+            STEdge cur = b.getCurrentEdge();
+            if (cur instanceof WaitEdge we && icao.equals(we.getFromNode().getIcao())) load++;
+        }
+        for (Baggage b : graph.getAssignedBaggages()) {
+            STEdge cur = b.getCurrentEdge();
+            if (cur instanceof WaitEdge we && icao.equals(we.getFromNode().getIcao())) load++;
+        }
+        for (PickupWaiting pw : awaitingPickup.values()) {
+            if (icao.equals(pw.icao())) load++;
+        }
+
+        if (load > capacity) {
+            log(String.format("*** ALMACÉN DESBORDADO *** %s: %d/%d maletas (>100%%)", icao, load, capacity));
+            // primaryBaggageId lleva el ICAO del almacén desbordado (no una maleta).
+            BaggageState state = new BaggageState(icao, icao, clock.now(), icao, clock.now());
+            handleCollapseDetected(new CollapseDetectedEvent(
+                    clock.now(),
+                    new CollapseDetector.CollapseInfo(
+                            CollapseDetector.CollapseReason.WAREHOUSE_OVERFLOW,
+                            List.of(state), 0),
+                    clock));
+        }
+    }
+
     private void handleCollapseDetected(CollapseDetectedEvent e) {
+        if (!running) return;   // ya colapsó/terminó — no re-disparar
         CollapseDetector.CollapseInfo info = e.getInfo();
         String reasonLabel = switch (info.reason()) {
-            case DEADLINE_EXCEEDED -> String.format(
+            case DEADLINE_EXCEEDED  -> String.format(
                     "deadline superado por %d min",
                     Duration.between(info.primaryDeadline(), clock.now()).toMinutes());
-            case NO_VIABLE_ROUTE   -> String.format(
+            case NO_VIABLE_ROUTE    -> String.format(
                     "sin ruta viable tras %d ciclos consecutivos", info.consecutiveCycles());
+            case WAREHOUSE_OVERFLOW -> String.format(
+                    "almacén %s superó su capacidad de almacenamiento", info.primaryBaggageId());
         };
         log(String.format(
                 "*** COLAPSO *** maleta=%s | razón=%s | deadline=%s",
@@ -514,6 +584,11 @@ public class SimulationRunner implements Runnable {
 
     public List<Baggage> getDeliveredBaggages() {
         return Collections.unmodifiableList(deliveredBaggages);
+    }
+
+    /** Maletas en su destino final esperando la ventana de recojo del pasajero. */
+    public List<PickupWaiting> getAwaitingPickup() {
+        return new ArrayList<>(awaitingPickup.values());
     }
 
     /** Foto forense de cada incumplimiento de SLA, en orden de ocurrencia. */

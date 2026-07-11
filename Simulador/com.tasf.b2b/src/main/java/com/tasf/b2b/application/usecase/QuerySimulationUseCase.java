@@ -772,6 +772,11 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 loadByIcao.merge(we.getFromNode().getIcao(), 1, Integer::sum);
             }
         }
+        // Maletas que esperan recojo en su destino final: siguen ocupando almacén
+        // hasta que el pasajero las recoge (ventana de pickupMinutes).
+        for (SimulationRunner.PickupWaiting pw : session.getRunner().getAwaitingPickup()) {
+            loadByIcao.merge(pw.icao(), 1, Integer::sum);
+        }
 
         List<AirportLiveView> result = new ArrayList<>();
         for (var a : graph.getAllAirports()) {
@@ -818,9 +823,15 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                     List<String> shipmentIds = e.getValue().stream()
                             .map(b -> b.getShipment().getShipmentData().getId())
                             .distinct().toList();
+                    List<AirportLiveView.InboundBaggage> bags = e.getValue().stream()
+                            .map(b -> new AirportLiveView.InboundBaggage(
+                                    b.getId(),
+                                    b.getShipment().getShipmentData().getId(),
+                                    b.getDestIcao()))
+                            .toList();
                     return new AirportLiveView.InboundFlight(
                             e.getKey(), fe.getFromNode().getIcao(),
-                            fe.getToNode().getTimeUtc(), e.getValue().size(), shipmentIds);
+                            fe.getToNode().getTimeUtc(), e.getValue().size(), shipmentIds, bags);
                 })
                 .toList();
 
@@ -873,8 +884,10 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
     @Override
     public AirportLiveView.TransitView getAirportTransit(String sessionId, String icao) {
         SimulationSession session = registry.findOrThrow(sessionId);
+        SimulationRunner  runner  = session.getRunner();
         SpaceTimeGraph    graph   = session.getGraph();
-        Instant           simNow  = session.getRunner().getClock().now();
+        Instant           simNow  = runner.getClock().now();
+        int               connectMinutes = runner.getConfig().minConnectionMinutes();
 
         requireAirport(graph, icao);
 
@@ -891,13 +904,49 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 nextDepTime  = fe.getFromNode().getTimeUtc();
             }
 
+            // Momento en que la maleta llegó (o fue registrada) en este almacén:
+            // última entrada de historial cuyo icao coincide con el aeropuerto actual.
+            // Tras aterrizar, el runner registra un WAITING/PENDING en el ICAO de destino,
+            // así que su timestamp es la llegada real al almacén.
+            Instant arrivedAt = null;
+            for (Baggage.StatusEntry h : b.getHistory()) {
+                if (icao.equals(h.icao())) arrivedAt = h.timestamp();
+            }
+            // Fin de la ventana de conexión (procesamiento en almacén) — antes de esto
+            // la maleta está "recién llegada" y aún no puede embarcarse.
+            Instant readyAt = arrivedAt != null
+                    ? arrivedAt.plus(Duration.ofMinutes(connectMinutes))
+                    : null;
+
             transit.add(new AirportLiveView.TransitBaggage(
                     b.getId(),
                     b.getShipment().getShipmentData().getId(),
                     b.getDestIcao(),
                     b.getDeadlineUtc(),
                     nextFlightId,
-                    nextDepTime));
+                    nextDepTime,
+                    arrivedAt,
+                    readyAt,
+                    false,   // no espera recojo: está en tránsito/conexión
+                    null));
+        }
+
+        // Maletas que llegaron a su destino final y esperan recojo del pasajero en este
+        // almacén (ocupan hasta el pickup). No están en ningún WaitEdge, se listan aparte.
+        for (SimulationRunner.PickupWaiting pw : runner.getAwaitingPickup()) {
+            if (!pw.icao().equals(icao)) continue;
+            Baggage b = pw.baggage();
+            transit.add(new AirportLiveView.TransitBaggage(
+                    b.getId(),
+                    b.getShipment().getShipmentData().getId(),
+                    b.getDestIcao(),
+                    b.getDeadlineUtc(),
+                    null,               // no tiene próximo vuelo — ya llegó a destino
+                    null,
+                    pw.pickupAt().minus(Duration.ofMinutes(runner.getConfig().pickupMinutes())), // arrivedAt
+                    pw.pickupAt(),      // readyAt = instante de recojo
+                    true,               // espera recojo
+                    pw.pickupAt()));
         }
 
         return new AirportLiveView.TransitView(icao, simNow, transit);

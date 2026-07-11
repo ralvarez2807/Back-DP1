@@ -172,9 +172,14 @@ public class RunSimulationUseCase implements SimulationControlPort {
         OptimizerPublisher optimizerPublisher = optimizerPublisherFactory.apply(sessionId);
 
         // ── 4. Configuración y runner ─────────────────────────────────────────
+        // minConnectionMinutes=15: tiempo muerto de escala — la maleta espera ≥15 min
+        // en el aeropuerto de conexión antes de embarcar el siguiente vuelo (lo respeta
+        // RouteFinder al planificar rutas con escalas).
+        // pickupMinutes=15: al llegar a su destino final, la maleta espera 15 min en el
+        // almacén hasta ser recogida por el pasajero (y descontada del total almacenado).
         SimulationConfig config = new SimulationConfig(
                 cmd.solverTimingMode(), cmd.optimizerMode(), speedFactor,
-                simStart, simEnd, cmd.dataSource(), 10, 10, cmd.collapseOnFailure());
+                simStart, simEnd, cmd.dataSource(), 15, 15, cmd.collapseOnFailure());
         SimulationRunner runner = new SimulationRunner(graph, config, publisher);
         runner.init(); // siembra HorizonExpandEvent y SimulationEndEvent en la cola
 

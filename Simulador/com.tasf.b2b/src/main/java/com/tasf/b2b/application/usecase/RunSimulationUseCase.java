@@ -13,6 +13,7 @@ import com.tasf.b2b.domain.model.graph.immovable.AirportDataDTO;
 import com.tasf.b2b.domain.model.graph.immovable.DeliveryTypeValues;
 import com.tasf.b2b.domain.model.graph.immovable.FlightScheduleDataDTO;
 import com.tasf.b2b.domain.model.graph.immovable.ShipmentDataDTO;
+import com.tasf.b2b.domain.simulator.dto.SimulationEndedDTO;
 import com.tasf.b2b.domain.simulator.event.FlightCancelledEvent;
 import com.tasf.b2b.domain.simulator.event.NewShipmentEvent;
 import com.tasf.b2b.domain.optimizer.alns.ALNSAlgorithm;
@@ -229,6 +230,14 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 finishedSessionCache.record(new FinishedSessionView(
                         session.getId(), session.getUsername(), finalStatus.name(),
                         Instant.now(), collapseReason, assignedRoutes));
+
+                // Aviso de cierre por WS: el cliente sabe a ciencia cierta que la
+                // simulación terminó (y por qué) sin depender de polling. Se publica
+                // antes de close() para que el flush del drenador lo entregue como
+                // último mensaje justo antes de cerrar los sockets.
+                publisher.publish(new SimulationEndedDTO(clock.now(), finalStatus.name(), collapseReason));
+                publisher.close();
+                optimizerPublisher.close();
             }
             registry.remove(sessionId); // liberar recursos del registry al terminar
         }, "simulation-runner-" + sessionId);
@@ -392,6 +401,11 @@ public class RunSimulationUseCase implements SimulationControlPort {
         finishedSessionCache.record(new FinishedSessionView(
                 session.getId(), session.getUsername(), SimulationSession.SimStatus.STOPPED.name(),
                 Instant.now(), null, query.buildAllRoutes(session)));
+        // Aviso de cierre por WS, publicado ANTES de interruptAll(): el close()
+        // que dispara interruptAll() flushea la cola antes de cerrar los sockets,
+        // así que este mensaje llega como el último antes del cierre.
+        session.getPublisher().publish(new SimulationEndedDTO(
+                session.getRunner().getClock().now(), SimulationSession.SimStatus.STOPPED.name(), null));
         // interruptAll() marca el status como STOPPED e interrumpe todos los hilos.
         // El simThread captura la InterruptedException y pone runner.running=false.
         session.interruptAll();

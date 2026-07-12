@@ -23,6 +23,14 @@ import java.util.Random;
 public class ALNSAlgorithm implements RoutingOptimizer {
 
     private static final long   TIME_BUDGET_MS  = 175;
+    // Máximo de maletas optimizadas por ciclo. Acota el costo de cada optimize():
+    // sin esto, con un backlog grande GRASP hacía 2×N búsquedas de ruta (Dijkstra, sin
+    // límite de tiempo) y cada optimize() tardaba segundos; sus soluciones llegaban
+    // obsoletas —el primer vuelo ya había partido, ver SimulationRunner.handleRouteSolution—
+    // y se descartaban → el backlog crecía sin fin. Se procesan las MÁS URGENTES (por
+    // deadline) primero; el resto se atiende en los ciclos siguientes (el hilo ALNS
+    // corre en bucle continuo mientras haya pendientes).
+    private static final int    MAX_BAGGAGES_PER_CYCLE = 200;
     private static final double REWARD_NEW_BEST = 3.0;
     private static final double REWARD_ACCEPTED = 1.0;
     private static final double REWARD_REJECTED = 0.0;
@@ -50,6 +58,17 @@ public class ALNSAlgorithm implements RoutingOptimizer {
             return SolutionResult.empty();
         }
 
+        // Conjunto de trabajo acotado: las maletas MÁS URGENTES (por deadline). Mantiene
+        // el costo por ciclo constante aunque el backlog sea enorme, para que la solución
+        // se aplique fresca. Si hay pocas pendientes se toman todas (sin cambio de comportamiento).
+        List<BaggageState> workingSet = projection.pendingBaggages();
+        if (workingSet.size() > MAX_BAGGAGES_PER_CYCLE) {
+            workingSet = workingSet.stream()
+                    .sorted(Comparator.comparing(BaggageState::deadline))
+                    .limit(MAX_BAGGAGES_PER_CYCLE)
+                    .toList();
+        }
+
         List<DestroyOperator> destroyOps = List.of(
                 new RandomRemoval(random),
                 new ShawRemoval(random),
@@ -75,13 +94,19 @@ public class ALNSAlgorithm implements RoutingOptimizer {
                 .max(Comparator.naturalOrder())
                 .orElseGet(() -> projection.snapshotTime().plusSeconds(14L * 24 * 3600));
 
-        BaggageSolution current = GraspInitializer.initialize(projection, random);
+        BaggageSolution current = GraspInitializer.initialize(projection, workingSet, random);
         BaggageSolution best    = current.deepCopy();
 
-        int baseK = Math.max(1, projection.pendingBaggages().size() / 5);
-        int maxK  = Math.max(1, projection.pendingBaggages().size() / 3);
+        int baseK = Math.max(1, workingSet.size() / 5);
+        int maxK  = Math.max(1, workingSet.size() / 3);
 
         long deadline = System.currentTimeMillis() + TIME_BUDGET_MS;
+
+        // Scores cacheados: antes se recomputaban current y best (O(rutadas)) en CADA
+        // iteración aunque no cambiaran. Ahora solo se calcula el del candidato y se
+        // actualizan current/best cuando efectivamente cambian.
+        double currentScore = current.score(horizonMax);
+        double bestScore    = currentScore;
 
         while (System.currentTimeMillis() < deadline) {
             BaggageSolution candidate = current.deepCopy();
@@ -97,16 +122,17 @@ public class ALNSAlgorithm implements RoutingOptimizer {
             repair.repair(candidate, projection);
 
             double candidateScore = candidate.score(horizonMax);
-            double currentScore   = current.score(horizonMax);
-            double bestScore      = best.score(horizonMax);
 
             if (candidateScore < bestScore) {
-                best    = candidate.deepCopy();
-                current = candidate;
+                best         = candidate.deepCopy();
+                bestScore    = candidateScore;
+                current      = candidate;
+                currentScore = candidateScore;
                 destroySel.reward(REWARD_NEW_BEST);
                 repairSel.reward(REWARD_NEW_BEST);
             } else if (acceptance.accept(candidateScore, currentScore)) {
-                current = candidate;
+                current      = candidate;
+                currentScore = candidateScore;
                 destroySel.reward(REWARD_ACCEPTED);
                 repairSel.reward(REWARD_ACCEPTED);
             } else {

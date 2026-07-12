@@ -457,6 +457,26 @@ public class SpaceTimeGraph {
         return (entry != null) ? entry.getValue() : null;
     }
 
+    // ── Resolución de nodo de entrada para RE-planificación ───────────────────
+    // Parte de un aeropuerto y de un `floor` temporal (la hora simulada actual):
+    // devuelve el primer STNode del aeropuerto con tiempo >= floor. A diferencia
+    // del método de arriba (que usa la hora de entrada ORIGINAL del envío), este
+    // nunca devuelve un nodo del pasado, así que al re-planificar tras una
+    // cancelación jamás se rutará sobre un vuelo ya partido.
+    //
+    // Los planes de vuelo son cíclicos: si `floor` cae de noche (p.ej. 21:00),
+    // el primer nodo disponible puede pertenecer al día siguiente (p.ej. 05:00);
+    // ceilingEntry lo encuentra igual. El deadline del SLA (24 h intracontinental
+    // / 48 h intercontinental desde el registro) ya está en baggage.getDeadlineUtc()
+    // y se valida aguas abajo en optimizeAndAssignRoutes.
+    public STNode resolveEntryNode(String originIcao, Instant floor) {
+        if (originIcao == null || floor == null) return null;
+        TreeMap<Instant, STNode> timeline = this.timelinesNodes.get(originIcao);
+        if (timeline == null) return null;
+        Map.Entry<Instant, STNode> entry = timeline.ceilingEntry(floor);
+        return (entry != null) ? entry.getValue() : null;
+    }
+
     // ── Consultas para operadores ALNS ────────────────────────────────────────
 
     // Aristas salientes de un nodo (para BFS/DFS en repair)
@@ -526,7 +546,11 @@ public class SpaceTimeGraph {
         return result;
     }
 
-    public void optimizeAndAssignRoutes(int pickupMinutes) {
+    // `now`: hora simulada actual. Se usa como piso temporal al resolver el nodo de
+    // entrada de cada maleta, para que la re-planificación (tras cancelaciones) solo
+    // considere vuelos que salen DESPUÉS de ahora. Antes se pasaba horizonCompleted
+    // (el fin del horizonte), lo que dejaba a las maletas ancladas a vuelos ya partidos.
+    public void optimizeAndAssignRoutes(int pickupMinutes, Instant now) {
         GeneticAlgorithm ga = new GeneticAlgorithm(this);
 
         List<Baggage> toAssign = new ArrayList<>(this.pendingBaggages);
@@ -536,8 +560,7 @@ public class SpaceTimeGraph {
         System.out.println("[OPTIMIZER] Optimizando " + toAssign.size() + " maletas...");
 
         for (Baggage baggage : toAssign) {
-            Instant currentTime = this.horizonCompleted;
-            List<STEdge> route = ga.planRoute(baggage, currentTime);
+            List<STEdge> route = ga.planRoute(baggage, now);
 
             if (route != null && !route.isEmpty()) {
                 // El runner solo ejecuta rutas de FlightEdges: al embarcar compara

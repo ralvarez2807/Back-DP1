@@ -6,6 +6,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.tasf.b2b.domain.simulator.StatePublisher;
 import com.tasf.b2b.domain.simulator.dto.*;
 import com.tasf.b2b.domain.simulator.dto.CollapseDetectedDTO;
+import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -33,6 +34,7 @@ public class InMemoryStatePublisher implements StatePublisher {
     private final AtomicLong                             seq         = new AtomicLong(0);
     private final Thread                                 drainThread;
     private final ObjectMapper                           mapper;
+    private volatile boolean                             closing     = false;
 
     public InMemoryStatePublisher(String sessionId) {
         this.mapper = new ObjectMapper()
@@ -51,9 +53,16 @@ public class InMemoryStatePublisher implements StatePublisher {
         queue.offer(dto);
     }
 
-    /** Llamado desde SimulationSession.interruptAll(). */
+    /**
+     * Llamado desde SimulationSession.interruptAll() (o al finalizar normalmente/
+     * colapsar). No cierra los sockets al toque: despierta al drenador para que
+     * primero entregue lo que quede en cola (típicamente el SIMULATION_ENDED
+     * publicado justo antes de este close()) y recién después cierre las
+     * conexiones — así el cliente recibe el mensaje final antes del cierre WS.
+     */
     @Override
     public void close() {
+        closing = true;
         drainThread.interrupt();
     }
 
@@ -70,19 +79,35 @@ public class InMemoryStatePublisher implements StatePublisher {
     // ── Hilo drenador ─────────────────────────────────────────────────────────
 
     private void drain() {
-        while (!Thread.currentThread().isInterrupted()) {
+        while (!closing) {
             try {
-                StateChangeDTO dto = queue.take();
-                String json = buildEnvelope(dto);
-                TextMessage msg = new TextMessage(json);
-                for (WebSocketSession session : subscribers) {
-                    sendQuietly(session, msg);
-                }
+                broadcast(queue.take());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-            } catch (Exception e) {
-                System.err.printf("[WS] Error serializando DTO: %s%n", e.getMessage());
+                break;
             }
+        }
+        // Flush: entrega lo que haya quedado en cola (p.ej. el SIMULATION_ENDED
+        // publicado justo antes de close()) antes de cerrar los sockets.
+        StateChangeDTO dto;
+        while ((dto = queue.poll()) != null) {
+            broadcast(dto);
+        }
+        for (WebSocketSession session : subscribers) {
+            try { session.close(CloseStatus.NORMAL); } catch (Exception ignored) {}
+        }
+        subscribers.clear();
+    }
+
+    private void broadcast(StateChangeDTO dto) {
+        try {
+            String json = buildEnvelope(dto);
+            TextMessage msg = new TextMessage(json);
+            for (WebSocketSession session : subscribers) {
+                sendQuietly(session, msg);
+            }
+        } catch (Exception e) {
+            System.err.printf("[WS] Error serializando DTO: %s%n", e.getMessage());
         }
     }
 
@@ -124,6 +149,7 @@ public class InMemoryStatePublisher implements StatePublisher {
             case BaggageAssignedDTO  ignored -> "BAGGAGE_ASSIGNED";
             case ShipmentCreatedDTO  ignored -> "SHIPMENT_CREATED";
             case CollapseDetectedDTO ignored -> "COLLAPSE_DETECTED";
+            case SimulationEndedDTO  ignored -> "SIMULATION_ENDED";
         };
     }
 }

@@ -14,10 +14,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * normal, colapso o stop manual). Así, si la ejecución se corta de forma
  * abrupta (crash, kill) sin pasar por un cierre prolijo, la última
  * planificación exitosa igual queda disponible por API. No hay persistencia
- * en BD: pasado el TTL, el resultado se descarta solo.
+ * en BD: pasado el TTL, el resultado indexado por sessionId se descarta solo.
  *
  * Purga perezosa (al guardar uno nuevo y al leer uno vencido) — no hace
  * falta un hilo de limpieza aparte para un TTL tan corto.
+ *
+ * Además de esa vista con TTL por sessionId, se mantiene por separado la
+ * última vista de cada cuenta (username) sin expiración: sobrevive a los
+ * 5 minutos y solo se reemplaza cuando esa misma cuenta corre otra
+ * simulación. El campo {@code id} de la vista deja anotado a qué sessionId
+ * pertenece.
  */
 public class FinishedSessionCache {
 
@@ -27,9 +33,12 @@ public class FinishedSessionCache {
 
     private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>();
 
+    private final ConcurrentHashMap<String, FinishedSessionView> lastByAccount = new ConcurrentHashMap<>();
+
     public void record(FinishedSessionView view) {
         purgeExpired();
         entries.put(view.id(), new Entry(view, Instant.now().plus(TTL)));
+        lastByAccount.put(view.username(), view);
     }
 
     /**
@@ -54,6 +63,18 @@ public class FinishedSessionCache {
         Entry e = entries.get(sessionId);
         if (e == null || Instant.now().isAfter(e.expiresAt())) return Optional.empty();
         return Optional.of(e.view());
+    }
+
+    /**
+     * Última vista conocida de la cuenta, sin TTL — se sobreescribe solo cuando
+     * esa cuenta vuelve a correr una simulación (ver {@link #record}).
+     *
+     * @throws IllegalArgumentException si la cuenta nunca corrió una simulación → HTTP 404
+     */
+    public FinishedSessionView findByAccountOrThrow(String username) {
+        FinishedSessionView view = lastByAccount.get(username);
+        if (view == null) throw new IllegalArgumentException("Resultado no encontrado para la cuenta: " + username);
+        return view;
     }
 
     private void purgeExpired() {

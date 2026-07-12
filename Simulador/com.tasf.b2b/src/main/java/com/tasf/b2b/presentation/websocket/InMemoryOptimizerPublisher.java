@@ -7,6 +7,7 @@ import com.tasf.b2b.domain.optimizer.metrics.AlgorithmRunDTO;
 import com.tasf.b2b.domain.optimizer.metrics.CollapseDetailDTO;
 import com.tasf.b2b.domain.optimizer.metrics.OptimizerEventDTO;
 import com.tasf.b2b.domain.optimizer.metrics.OptimizerPublisher;
+import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -29,6 +30,7 @@ public class InMemoryOptimizerPublisher implements OptimizerPublisher {
     private final AtomicLong                             seq         = new AtomicLong(0);
     private final Thread                                 drainThread;
     private final ObjectMapper                           mapper;
+    private volatile boolean                             closing     = false;
 
     public InMemoryOptimizerPublisher(String sessionId) {
         this.mapper = new ObjectMapper()
@@ -44,8 +46,10 @@ public class InMemoryOptimizerPublisher implements OptimizerPublisher {
         queue.offer(event);
     }
 
+    /** Mismo cierre prolijo que InMemoryStatePublisher: flush de la cola, luego cierra los sockets. */
     @Override
     public void close() {
+        closing = true;
         drainThread.interrupt();
     }
 
@@ -58,19 +62,33 @@ public class InMemoryOptimizerPublisher implements OptimizerPublisher {
     }
 
     private void drain() {
-        while (!Thread.currentThread().isInterrupted()) {
+        while (!closing) {
             try {
-                OptimizerEventDTO dto = queue.take();
-                String json = buildEnvelope(dto);
-                TextMessage msg = new TextMessage(json);
-                for (WebSocketSession session : subscribers) {
-                    sendQuietly(session, msg);
-                }
+                broadcast(queue.take());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-            } catch (Exception e) {
-                System.err.printf("[WS-OPT] Error serializando evento: %s%n", e.getMessage());
+                break;
             }
+        }
+        OptimizerEventDTO dto;
+        while ((dto = queue.poll()) != null) {
+            broadcast(dto);
+        }
+        for (WebSocketSession session : subscribers) {
+            try { session.close(CloseStatus.NORMAL); } catch (Exception ignored) {}
+        }
+        subscribers.clear();
+    }
+
+    private void broadcast(OptimizerEventDTO dto) {
+        try {
+            String json = buildEnvelope(dto);
+            TextMessage msg = new TextMessage(json);
+            for (WebSocketSession session : subscribers) {
+                sendQuietly(session, msg);
+            }
+        } catch (Exception e) {
+            System.err.printf("[WS-OPT] Error serializando evento: %s%n", e.getMessage());
         }
     }
 

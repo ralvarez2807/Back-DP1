@@ -12,7 +12,7 @@ public sealed interface StateChangeDTO
         permits FlightScheduledDTO, FlightDepartedDTO, BaggageDepartedDTO,
                 FlightArrivedDTO, BaggageArrivedDTO, BaggageDeliveredDTO,
                 BaggagePendingDTO, FlightCancelledDTO, ShipmentCreatedDTO,
-                BaggageAssignedDTO, CollapseDetectedDTO {
+                BaggageAssignedDTO, CollapseDetectedDTO, SimulationEndedDTO {
 
     Instant simTime();
 }

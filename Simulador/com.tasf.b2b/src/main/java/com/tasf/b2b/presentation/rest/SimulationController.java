@@ -181,6 +181,18 @@ public class SimulationController {
         return finishedSessionCache.findOrThrow(id);
     }
 
+    /**
+     * Última solución conocida de la cuenta autenticada, sin importar el
+     * sessionId. A diferencia de {@code /{id}/result} (que expira 5 min tras
+     * terminar), esta vista es permanente: se sobreescribe únicamente cuando
+     * la cuenta vuelve a correr otra simulación. El campo {@code id} de la
+     * respuesta indica a qué simulación pertenece.
+     */
+    @GetMapping("/mine/result")
+    public FinishedSessionView getMyResult(Principal principal) {
+        return finishedSessionCache.findByAccountOrThrow(principal.getName());
+    }
+
     // ── Circunstancias (disrupciones) ─────────────────────────────────────────
 
     /**

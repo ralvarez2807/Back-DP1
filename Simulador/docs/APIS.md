@@ -38,6 +38,8 @@ Base URL: `http://localhost:8080/api/v1`
 | ✅ | POST | `/simulations/:id/pause` | 409 si no está running |
 | ✅ | POST | `/simulations/:id/resume` | 409 si no está paused |
 | ✅ | POST | `/simulations/:id/stop` | libera recursos |
+| ✅ | GET | `/simulations/:id/result` | última solución conocida (TTL 5 min tras terminar) |
+| ✅ | GET | `/simulations/mine/result` | última solución de la cuenta autenticada, permanente (sin TTL) |
 | ⏳ | POST | `/simulations/:id/disruptions` | inyecta cancelación/avería |
 | ✅ | GET | `/simulations/:id/dashboard` | métricas en tiempo real |
 | ✅ | GET | `/simulations/:id/snapshot` | estado completo |
@@ -144,6 +146,11 @@ Response `200`:
 { "message": "Vuelos actualizados (merge)", "count": 2866, "errors": [], "warnings": [] }
 ```
 
+Errores: `400` si no hay aeropuertos cargados en BD ("No hay aeropuertos en la BD. Sube
+aeropuertos primero.") **o** si el archivo no contiene vuelos válidos — este endpoint
+devuelve `400` para ambos casos (no `409`, a diferencia de la convención general de
+`IllegalStateException → 409` que sí aplica en `POST /admin/shipments`).
+
 ---
 
 ### POST /admin/flights/single — ⏳ (LE-10)
@@ -185,7 +192,7 @@ Errores: `400` (ningún campo enviado, o `capacity <= 0`) · `404` (`scheduleId`
 
 ### POST /admin/shipments — ✅
 
-Sube **varios** `_envios_ICAO_.txt` a la vez.  
+Sube **varios** `_envios_ICAO_.txt` a la vez (archivo **ISO-8859-1**).  
 Request: `multipart/form-data` → campo `files`
 
 Response `201`:
@@ -199,7 +206,8 @@ Errores: `409` ya existen shipments (hacer `DELETE /admin/shipments` primero)
 
 ### POST /admin/shipments/file — ⏳
 
-Sube **un solo** archivo.  
+Sube **un solo** archivo (`_envios_ICAO_.txt`, archivo **ISO-8859-1**). A diferencia de
+`POST /admin/shipments`, no valida que la tabla esté vacía — siempre agrega (no hay `409`).  
 Request: `multipart/form-data` → campo `file`
 
 Response `201`:
@@ -249,7 +257,9 @@ Errores: `404` aeropuerto no registrado
 
 ### POST /admin/historical/:icao?mode=merge|replace — merge ✅ / replace ⏳
 
-Request: `multipart/form-data` → campo `file` (nombre debe contener el ICAO)
+Request: `multipart/form-data` → campo `file` (archivo **ISO-8859-1**, nombre debe seguir
+el patrón `_envios_ICAO_.txt` y coincidir con el `:icao` del path). `mode=replace` borra
+solo los shipments de **ese** aeropuerto de origen antes de insertar (no todo el histórico).
 
 Response `201`:
 ```json
@@ -270,6 +280,10 @@ Response `200`:
 ---
 
 ### DELETE /admin/historical — ⏳
+
+Borra **todos** los shipments de **todos** los aeropuertos (mismo método interno que
+`DELETE /admin/shipments` — ambas rutas llegan al mismo borrado global; `DELETE
+/admin/historical/:icao` en cambio solo borra los de ese aeropuerto).
 
 Response `200`:
 ```json
@@ -374,7 +388,16 @@ Todos los campos son obligatorios. No hay valores por defecto.
 | `speedFactor` | número > 0 | solo DB |
 | `collapseOnFailure` | boolean, default `false` si se omite | no |
 
-`collapseOnFailure` habilita la detección de colapso del optimizador: si el ALNS falla repetidamente en rutear una maleta (deadline superado o sin ruta viable), se emite `COLLAPSE_DETECTED` por el WS `/ws` y el detalle completo (`COLLAPSE_DETAIL`) por el WS `/ws-optimizer`.
+`collapseOnFailure` habilita la detección de colapso, que detiene la simulación ante
+cualquiera de tres condiciones: **`DEADLINE_EXCEEDED`** (una maleta pendiente supera su
+deadline, o vence el deadline de una maleta en cualquier estado — `PENDING`/`WAITING`/
+`IN_FLIGHT`), **`NO_VIABLE_ROUTE`** (el ALNS deja el mismo conjunto de maletas sin ruta,
+sin tolerancia — un solo ciclo fallido ya colapsa) o **`WAREHOUSE_OVERFLOW`** (un almacén
+supera su capacidad física, al margen de lo que haga el optimizador). En los tres casos se
+emite `COLLAPSE_DETECTED` por el WS `/ws`; el detalle completo (`COLLAPSE_DETAIL`) por el
+WS `/ws-optimizer` solo se emite para los dos primeros (los que detecta el `CollapseDetector`
+del hilo ALNS) — `WAREHOUSE_OVERFLOW` y el `DEADLINE_EXCEEDED` disparado por vencimiento de
+maletas en tránsito no generan `COLLAPSE_DETAIL`, solo el `COLLAPSE_DETECTED` básico.
 
 > Si se solicita una combinación no implementada, el servidor devuelve `501 Not Implemented` con el mensaje de error.  
 > Implementado: `DB + REAL_TIME + ALNS_ONLY`.
@@ -428,6 +451,51 @@ Response `204`. Errores: `409` no está en `paused`
 Detiene hilos y libera recursos. No reversible.
 
 Response `204`
+
+---
+
+### GET /simulations/:id/result — ✅
+
+Última solución conocida de la sesión: status, razón del colapso si aplica, y la última
+ruta asignada por maleta. Se actualiza sola cada ~3s mientras la sesión corre (status
+`"RUNNING"`), así que también responde para una sesión activa o para una que se cortó de
+golpe (crash, kill) sin pasar por un cierre prolijo. Al terminar de forma normal queda el
+status definitivo (`COMPLETED`/`COLLAPSED`/`STOPPED`).
+
+Disponible hasta **5 minutos** después del último snapshot — pasado ese tiempo, o si el
+`id` nunca existió, responde `404`.
+
+Response `200`:
+```json
+{
+  "id":             "550e8400-e29b-41d4-a716-446655440000",
+  "username":        "admin",
+  "status":          "COMPLETED",
+  "endedAt":         "2026-01-07T00:00:03Z",
+  "collapseReason":  null,
+  "assignedRoutes":  [ { "baggageId": "S1-B3", "route": ["SKBO-SEQM-19:00-20260103"] } ]
+}
+```
+
+`collapseReason` solo viene poblado si `status = COLLAPSED`. Si colapsó, `assignedRoutes`
+conserva el último snapshot **bueno** anterior a la falla (no el estado que causó el
+colapso).
+
+Errores: `404` resultado no encontrado (TTL vencido o `id` nunca existió)
+
+---
+
+### GET /simulations/mine/result — ✅
+
+Última solución conocida de la **cuenta autenticada**, sin importar el `sessionId`. A
+diferencia de `/simulations/:id/result` (TTL de 5 min), esta vista es **permanente**: se
+sobreescribe únicamente cuando esa cuenta vuelve a correr otra simulación. El campo `id`
+de la respuesta indica a qué sesión pertenece. Útil para consultar "¿cómo terminó mi
+última corrida?" sin tener que recordar el `sessionId` ni llegar a tiempo dentro del TTL.
+
+Response `200`: mismo schema que `/simulations/:id/result`.
+
+Errores: `404` la cuenta nunca corrió una simulación
 
 ---
 
@@ -604,7 +672,7 @@ Response `200`:
 
 ## 7. Monitoreo
 
-### GET /simulations/:id/dashboard — ⏳
+### GET /simulations/:id/dashboard — ✅
 
 Response `200`:
 ```json
@@ -1107,7 +1175,8 @@ Solo recibe — el cliente no envía. Push desde `InMemoryStatePublisher`.
 | `BAGGAGE_PENDING` | `{ baggageId, currentIcao }` |
 | `BAGGAGE_ASSIGNED` | `{ baggageId, route: [flightId, ...] }` |
 | `SHIPMENT_CREATED` | `{ shipmentId, baggageIds: [...], originIcao, destIcao, deadlineUtc }` |
-| `COLLAPSE_DETECTED` | `{ reason: DEADLINE_EXCEEDED\|NO_VIABLE_ROUTE, baggageId, deadline, consecutiveCycles }` |
+| `COLLAPSE_DETECTED` | `{ reason: DEADLINE_EXCEEDED\|NO_VIABLE_ROUTE\|WAREHOUSE_OVERFLOW, baggageId, deadline, consecutiveCycles }` |
+| `SIMULATION_ENDED` | `{ status: COMPLETED\|COLLAPSED\|STOPPED, collapseReason }` — último mensaje de la sesión, para cualquier tipo de finalización (fin normal, colapso o `stop` manual). `collapseReason` solo viene poblado si `status = COLLAPSED`. Tras entregarlo, el servidor cierra la conexión WS (`CloseStatus.NORMAL`) — el cliente no necesita hacer polling para detectar el fin. |
 
 Reconexión: el servidor no tiene replay — los eventos perdidos no se recuperan. Usar `GET /simulations/:id/snapshot` para re-sincronizar el estado completo tras reconectar.
 

@@ -19,7 +19,10 @@ jwt:
   # Producción: exportar JWT_SECRET como variable de entorno (base64, ≥256 bits).
   # Desarrollo: copiar application-dev.yml.example a application-dev.yml y definir el secreto ahí.
   secret: ${JWT_SECRET}
-  expiration-ms: 3600000  # 1 hora en milisegundos
+  # TTL del token. DEBE superar la duración de una sesión de trabajo (la simulación
+  # dura ~1h30), si no el token expira a mitad de sesión: dejan de cargar los datos
+  # (401) y al recargar te saca al login. Override con JWT_EXPIRATION_MS. Default: 12 h.
+  expiration-ms: ${JWT_EXPIRATION_MS:43200000}  # 12 horas en milisegundos
 
 # Orígenes permitidos para WebSocket y CORS.
 # Producción: exportar CORS_ALLOWED_ORIGINS=https://tu-dominio.com

@@ -571,7 +571,7 @@ public class SimulationRunner implements Runnable {
     }
     private void runOptimizationCycle() {
         log("Ejecutando ciclo de optimización...");
-        graph.optimizeAndAssignRoutes(config.pickupMinutes());
+        graph.optimizeAndAssignRoutes(config.pickupMinutes(), clock.now());
 
         int pendingCount = graph.getPendingBaggages().size();
         int assignedCount = graph.getAssignedBaggages().size();

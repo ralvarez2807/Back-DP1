@@ -38,7 +38,7 @@ public class GeneticAlgorithm {
     public List<STEdge> planRoute(Baggage baggage, Instant startTime) {
         String destIcao = baggage.getDestIcao();
 
-        STNode startNode = graph.resolveEntryNode(baggage.getShipment().getShipmentData());
+        STNode startNode = resolveStart(baggage, startTime);
         if (startNode == null) {
             return new ArrayList<>();
         }
@@ -473,9 +473,26 @@ public class GeneticAlgorithm {
     // Métodos auxiliares
 
     private STEdge getInitialWaitEdge(Baggage baggage, Instant startTime) {
-        var entryNode = graph.resolveEntryNode(baggage.getShipment().getShipmentData());
+        var entryNode = resolveStart(baggage, startTime);
         if (entryNode == null) return null;
         return graph.getWaitEdgeFrom(entryNode);
+    }
+
+    /**
+     * Nodo de entrada para (re)planificación: parte de la posición ACTUAL de la
+     * maleta (no siempre el origen del envío —tras una escala o cancelación puede
+     * estar en un aeropuerto intermedio) y NUNCA de un instante anterior a
+     * {@code floor} (la hora simulada actual). Así, al re-planificar tras una
+     * cancelación, jamás se ruta sobre un vuelo ya partido. Como los planes son
+     * cíclicos, si {@code floor} cae de noche el primer nodo disponible puede ser
+     * del día siguiente y ceilingEntry lo encuentra igual.
+     */
+    private STNode resolveStart(Baggage baggage, Instant floor) {
+        String originIcao = baggage.getCurrentAirport();
+        if (originIcao == null) {
+            originIcao = baggage.getShipment().getShipmentData().getOriginAirport().getIcao();
+        }
+        return graph.resolveEntryNode(originIcao, floor);
     }
 
     private boolean isAtDestination(STEdge currentEdge, Baggage baggage) {

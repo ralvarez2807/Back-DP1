@@ -13,12 +13,14 @@ import java.util.Random;
  */
 class GraspInitializer {
 
-    static BaggageSolution initialize(AlnsProjection projection, Random random) {
-        List<BaggageState> byDeadline = new ArrayList<>(projection.pendingBaggages());
+    // workingSet: subconjunto de maletas a rutar este ciclo (las más urgentes, ya
+    // acotado por ALNSAlgorithm). Antes usaba projection.pendingBaggages() completo.
+    static BaggageSolution initialize(AlnsProjection projection, List<BaggageState> workingSet, Random random) {
+        List<BaggageState> byDeadline = new ArrayList<>(workingSet);
         byDeadline.sort(Comparator.comparing(BaggageState::deadline));
         BaggageSolution greedy = buildFrom(byDeadline, projection);
 
-        List<BaggageState> shuffled = new ArrayList<>(projection.pendingBaggages());
+        List<BaggageState> shuffled = new ArrayList<>(workingSet);
         Collections.shuffle(shuffled, random);
         BaggageSolution randomized = buildFrom(shuffled, projection);
 

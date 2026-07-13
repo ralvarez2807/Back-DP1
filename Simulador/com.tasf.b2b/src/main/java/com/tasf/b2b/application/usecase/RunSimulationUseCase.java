@@ -35,6 +35,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -88,6 +91,25 @@ public class RunSimulationUseCase implements SimulationControlPort {
     /** Feeds vacíos para la Operación Día a Día: sin envíos ni cancelaciones simulados. */
     private static final ShipmentFeed     EMPTY_SHIPMENT_FEED     = () -> null;
     private static final CancellationFeed EMPTY_CANCELLATION_FEED = () -> null;
+
+    /**
+     * Margen que una sesión terminada (COLLAPSED, COMPLETED o STOPPED) sigue
+     * disponible en el registry tras publicar el WS de cierre, antes de
+     * liberarse. Sin este margen, el remove() corría en el mismo instante en
+     * que se publicaba el evento de cierre: el cliente recién se entera por
+     * WS y dispara un GET (p.ej. /reports/summary) que llega, casi siempre,
+     * después de que la sesión ya fue removida → 404 aunque la simulación
+     * acabe de terminar. hasActiveSession() no se ve afectado por este
+     * margen porque solo cuenta STARTING/RUNNING/PAUSED como activa.
+     */
+    private static final long REGISTRY_GRACE_SECONDS = 15;
+
+    private static final ScheduledExecutorService registryCleanup =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "session-registry-cleanup");
+                t.setDaemon(true);
+                return t;
+            });
 
     /**
      * @param registry                registro compartido de sesiones activas
@@ -239,7 +261,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 publisher.close();
                 optimizerPublisher.close();
             }
-            registry.remove(sessionId); // liberar recursos del registry al terminar
+            scheduleRegistryRemoval(sessionId);
         }, "simulation-runner-" + sessionId);
         simThread.setDaemon(false);
 
@@ -409,8 +431,16 @@ public class RunSimulationUseCase implements SimulationControlPort {
         // interruptAll() marca el status como STOPPED e interrumpe todos los hilos.
         // El simThread captura la InterruptedException y pone runner.running=false.
         session.interruptAll();
-        registry.remove(sessionId);
+        scheduleRegistryRemoval(sessionId);
         System.out.printf("[SIM] Sesión %s detenida manualmente.%n", sessionId);
+    }
+
+    /**
+     * Programa la liberación de la sesión del registry tras {@link #REGISTRY_GRACE_SECONDS},
+     * en vez de removerla en el acto. Ver comentario de la constante.
+     */
+    private void scheduleRegistryRemoval(String sessionId) {
+        registryCleanup.schedule(() -> registry.remove(sessionId), REGISTRY_GRACE_SECONDS, TimeUnit.SECONDS);
     }
 
     // ── injectDisruption ──────────────────────────────────────────────────────

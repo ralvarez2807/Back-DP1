@@ -23,6 +23,8 @@ import com.tasf.b2b.domain.util.TimeUtils;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.PriorityBlockingQueue;
 
 public class SpaceTimeGraph {
     // --Ventana de expansión--------
@@ -55,14 +57,28 @@ public class SpaceTimeGraph {
     private final TreeMap<Instant, String> pendingCancellationsFlightsSchedule;
 
     //--Baggages----------------------------------------
-    // Todos los baggages del problema — fuente de verdad para recuperación
+    // Todos los baggages del problema — fuente de verdad para recuperación.
+    // CopyOnWriteArrayList: el runner solo le hace add() (poco frecuente, un
+    // shipment nuevo a la vez); en cambio lo leen seguido hilos HTTP y el hilo
+    // ALNS — con ArrayList normal esas lecturas concurrentes con el add() del
+    // runner podían lanzar ConcurrentModificationException (o corromper la
+    // copia en curso) al construir snapshots tipo `new ArrayList<>(allBaggages)`.
     private final List<Baggage> allBaggages;
 
-    // Baggages sin ruta asignada, ordenados por deadline (más urgente primero)
-    private final PriorityQueue<Baggage> pendingBaggages;
+    // Baggages sin ruta asignada, ordenados por deadline (más urgente primero).
+    // PriorityBlockingQueue: mutada muy seguido por el runner (assignBaggage/
+    // unassignBaggage en cada ciclo ALNS) mientras el hilo ALNS y los hilos HTTP
+    // la copian para tomar snapshots (AlnsProjectionBuilder, QuerySimulationUseCase).
+    // Con la PriorityQueue no-thread-safe original esa carrera podía tirar
+    // ConcurrentModificationException a mitad de la copia (mataba el hilo ALNS
+    // sin capturarla nadie, cortando en silencio la detección de colapso
+    // NO_VIABLE_ROUTE) o fallar el endpoint HTTP de turno con 500. El iterador
+    // de PriorityQueue tampoco garantizaba orden por deadline (solo poll() lo
+    // hace), así que este cambio no altera ningún orden del que ya se dependiera.
+    private final PriorityBlockingQueue<Baggage> pendingBaggages;
 
-    // Baggages con ruta asignada, ordenados por deadline
-    private final PriorityQueue<Baggage> assignedBaggages;
+    // Baggages con ruta asignada, ordenados por deadline — mismo motivo que pendingBaggages.
+    private final PriorityBlockingQueue<Baggage> assignedBaggages;
 
     //--Aeropuertos, horarios de vuelo y tipos de vuelo (todos fijos) ----------------
     // Acceso rápido a aeropuertos registrados
@@ -86,9 +102,9 @@ public class SpaceTimeGraph {
         this.adjEdges = new HashMap<>();
         this.flightsSchedule = new HashMap<>();
         this.deliveryTypeValues = new DeliveryTypeValues();
-        this.allBaggages = new ArrayList<>();
-        this.pendingBaggages = new PriorityQueue<>(Comparator.comparing(Baggage::getDeadlineUtc));
-        this.assignedBaggages = new PriorityQueue<>(Comparator.comparing(Baggage::getDeadlineUtc));
+        this.allBaggages = new CopyOnWriteArrayList<>();
+        this.pendingBaggages = new PriorityBlockingQueue<>(11, Comparator.comparing(Baggage::getDeadlineUtc));
+        this.assignedBaggages = new PriorityBlockingQueue<>(11, Comparator.comparing(Baggage::getDeadlineUtc));
     }
 
     //Constructor con horizonte límite
@@ -631,6 +647,6 @@ public class SpaceTimeGraph {
     public List<Baggage> getAllBaggages() {
         return Collections.unmodifiableList(this.allBaggages);
     }
-    public PriorityQueue<Baggage> getPendingBaggages()  { return this.pendingBaggages; }
-    public PriorityQueue<Baggage> getAssignedBaggages() { return this.assignedBaggages; }
+    public PriorityBlockingQueue<Baggage> getPendingBaggages()  { return this.pendingBaggages; }
+    public PriorityBlockingQueue<Baggage> getAssignedBaggages() { return this.assignedBaggages; }
 }

@@ -42,6 +42,11 @@ public class SimulationRunner implements Runnable {
     private final StatePublisher       publisher;
 
     //TODO: deliveredBaggages luego no servirá — se guardará un histórico en PostgreSQL
+    // CopyOnWriteArrayList: el runner solo le hace add() (una entrega a la vez);
+    // los hilos de consulta (getReport, buildAllRoutes, dashboard) la leen seguido
+    // — mismo motivo que pendingBaggages/assignedBaggages en SpaceTimeGraph, ver
+    // ese comentario. Con ArrayList normal, iterarla mientras el runner le hacía
+    // add() podía lanzar ConcurrentModificationException.
     private final List<Baggage> deliveredBaggages;
     // IDs entregados para chequeo O(1) en el evento de deadline (SLA).
     private final Set<String>   deliveredIds;
@@ -55,6 +60,8 @@ public class SimulationRunner implements Runnable {
     // (getAirportTransit / getAirports) — evita ConcurrentModificationException al copiar.
     private final Map<String, PickupWaiting> awaitingPickup = new java.util.concurrent.ConcurrentHashMap<>();
     // Foto forense de cada incumplimiento de SLA, en orden de ocurrencia.
+    // CopyOnWriteArrayList por el mismo motivo que deliveredBaggages: la lee
+    // GET /sla-breaches (SlaBreachesModal) mientras el runner le hace add().
     private final List<com.tasf.b2b.domain.simulator.dto.SlaBreachInfo> slaBreaches;
 
     private volatile boolean running;
@@ -74,9 +81,9 @@ public class SimulationRunner implements Runnable {
         this.clock             = new SimulationClock(config.simStart(), config.speedFactor());
         this.simEnd            = config.simEnd();
         this.eventQueue        = new DelayQueue<>();
-        this.deliveredBaggages = new ArrayList<>();
+        this.deliveredBaggages = new java.util.concurrent.CopyOnWriteArrayList<>();
         this.deliveredIds      = new HashSet<>();
-        this.slaBreaches       = new ArrayList<>();
+        this.slaBreaches       = new java.util.concurrent.CopyOnWriteArrayList<>();
         this.running           = false;
     }
 

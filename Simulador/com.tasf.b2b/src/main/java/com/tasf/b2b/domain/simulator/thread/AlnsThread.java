@@ -64,30 +64,6 @@ public class AlnsThread implements Runnable {
             try {
                 SpaceTimeGraph graph = runner.getGraph();
 
-                // Chequeo periódico de desborde de almacén: corre en CADA poll (aunque
-                // no haya maletas pendientes) para que el colapso por almacén al 101 %
-                // se detecte siempre — incluye maletas WAITING acumuladas en un hub,
-                // picos entre eventos del runner y reducciones de capacidad en caliente
-                // (pestaña Aeropuertos), casos que checkWarehouseOverflow (puntual, solo
-                // en llegada/nuevo envío) no alcanza a ver.
-                if (config.collapseOnFailure() && !collapseSubmitted) {
-                    var overflowIcao = runner.detectWarehouseOverflow();
-                    if (overflowIcao.isPresent()) {
-                        BaggageState state = new BaggageState(
-                                overflowIcao.get(), overflowIcao.get(), clock.now(),
-                                overflowIcao.get(), clock.now());
-                        runner.submit(new CollapseDetectedEvent(
-                                clock.now(),
-                                new CollapseDetector.CollapseInfo(
-                                        CollapseDetector.CollapseReason.WAREHOUSE_OVERFLOW,
-                                        List.of(state), 0),
-                                clock));
-                        collapseSubmitted = true;
-                        Thread.sleep(pollMs());
-                        continue;
-                    }
-                }
-
                 if (graph.getPendingBaggages().isEmpty()) {
                     Thread.sleep(pollMs());
                     continue;

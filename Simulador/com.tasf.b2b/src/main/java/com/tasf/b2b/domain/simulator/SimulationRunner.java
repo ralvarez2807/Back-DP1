@@ -538,36 +538,6 @@ public class SimulationRunner implements Runnable {
         }
     }
 
-    // Barrido de SOLO LECTURA de todos los almacenes: devuelve el ICAO del primer
-    // almacén cuya carga física supera su capacidad, o Optional.empty() si ninguno se
-    // desborda. Pensado para el chequeo periódico del AlnsThread — NO muta estado ni
-    // dispara el colapso (eso lo hace este runner al recibir el CollapseDetectedEvent
-    // que el AlnsThread le envía), de modo que la detección quede siempre en el hilo
-    // del runner. Cubre los picos entre eventos y los cambios de capacidad en caliente
-    // (pestaña Aeropuertos) que el chequeo puntual de checkWarehouseOverflow no alcanza.
-    public Optional<String> detectWarehouseOverflow() {
-        if (!config.collapseOnFailure()) return Optional.empty();
-
-        Map<String, Integer> loadByIcao = new HashMap<>();
-        for (Baggage b : new ArrayList<>(graph.getAllBaggages())) {
-            if (b.getCurrentEdge() instanceof WaitEdge we) {
-                loadByIcao.merge(we.getFromNode().getIcao(), 1, Integer::sum);
-            }
-        }
-        for (PickupWaiting pw : awaitingPickup.values()) {
-            loadByIcao.merge(pw.icao(), 1, Integer::sum);
-        }
-        for (Map.Entry<String, Integer> entry : loadByIcao.entrySet()) {
-            AirportDataDTO airport = graph.getAirport(entry.getKey());
-            if (airport == null) continue;
-            int capacity = airport.getCapacity();
-            if (capacity > 0 && entry.getValue() > capacity) {
-                return Optional.of(entry.getKey());
-            }
-        }
-        return Optional.empty();
-    }
-
     private void handleCollapseDetected(CollapseDetectedEvent e) {
         if (!running) return;   // ya colapsó/terminó — no re-disparar
         CollapseDetector.CollapseInfo info = e.getInfo();

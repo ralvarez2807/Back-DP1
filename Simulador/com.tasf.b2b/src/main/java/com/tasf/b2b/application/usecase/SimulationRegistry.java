@@ -55,10 +55,19 @@ public class SimulationRegistry {
         };
     }
 
-    /** Elimina una sesión del registro (después de stop o completed). */
+    /**
+     * Elimina una sesión del registro (después de stop o completed).
+     *
+     * La remoción real está diferida unos segundos tras el cierre (ver
+     * RunSimulationUseCase#scheduleRegistryRemoval), así que para cuando esto
+     * corre el usuario ya pudo haber arrancado una sesión nueva que
+     * sobreescribió su entrada en {@code byUser}. Se usa remove(key, value)
+     * para borrar esa entrada solo si todavía apunta a esta sessionId —
+     * si no, la sesión nueva ya la reemplazó y no hay que tocarla.
+     */
     public void remove(String sessionId) {
         SimulationSession s = sessions.remove(sessionId);
-        if (s != null) byUser.remove(s.getUsername());
+        if (s != null) byUser.remove(s.getUsername(), sessionId);
     }
 
     /** Todas las sesiones activas. */

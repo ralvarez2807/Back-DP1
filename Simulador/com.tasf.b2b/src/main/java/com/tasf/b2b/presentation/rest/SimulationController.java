@@ -65,9 +65,9 @@ public class SimulationController {
      * simTime es el tiempo dentro de la simulación (no el reloj de pared).
      */
     record SessionResponse(String id, String status, Instant simTime,
-                           Instant simStart, Instant simEnd) {
+                           Instant simStart, Instant simEnd, double speedFactor) {
         static SessionResponse from(SimSessionView v) {
-            return new SessionResponse(v.id(), v.status(), v.simTime(), v.simStart(), v.simEnd());
+            return new SessionResponse(v.id(), v.status(), v.simTime(), v.simStart(), v.simEnd(), v.speedFactor());
         }
     }
 

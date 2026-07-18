@@ -73,7 +73,8 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 session.getStatus().name().toLowerCase(),
                 runner.getClock().now(),
                 session.getConfig().simStart(),
-                session.getConfig().simEnd());
+                session.getConfig().simEnd(),
+                session.getConfig().speedFactor());
     }
 
     @Override
@@ -86,7 +87,8 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 session.getStatus().name().toLowerCase(),
                 runner.getClock().now(),
                 session.getConfig().simStart(),
-                session.getConfig().simEnd());
+                session.getConfig().simEnd(),
+                session.getConfig().speedFactor());
     }
 
     // ── getDashboard ──────────────────────────────────────────────────────────

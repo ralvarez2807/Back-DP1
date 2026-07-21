@@ -30,7 +30,6 @@ import com.tasf.b2b.domain.simulator.thread.*;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -38,7 +37,6 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
@@ -82,11 +80,13 @@ public class RunSimulationUseCase implements SimulationControlPort {
     private final QuerySimulationUseCase           query;
     private final FinishedSessionCache             finishedSessionCache;
 
-    /** Secuencia para los ids de envíos cargados manualmente (operario). */
-    private final AtomicLong manualShipmentSeq = new AtomicLong(0);
-
-    private static final DateTimeFormatter MANUAL_ID_FMT =
-            DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC);
+    /**
+     * Ids de envíos cargados manualmente sin id explícito: correlativo numérico de 9
+     * cifras con ceros a la izquierda ("000000001", "000000002", …), el mismo formato
+     * que los ids de pedido de los archivos de envíos.
+     */
+    private static final int SHIPMENT_ID_DIGITS = 9;
+    private static final int MAX_SHIPMENT_ID    = 999_999_999;
 
     /** Feeds vacíos para la Operación Día a Día: sin envíos ni cancelaciones simulados. */
     private static final ShipmentFeed     EMPTY_SHIPMENT_FEED     = () -> null;
@@ -578,17 +578,22 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 ? "OPERARIO" : cmd.clientId().trim();
 
         // Id del envío: si la orden trae un id de pedido explícito se usa ese (y por
-        // tanto las maletas quedan como <orderId>-B<n>); si no, se genera uno automático.
-        // El id se reserva en el runner: un id explícito sólo puede reutilizarse una vez
-        // que TODAS las maletas del envío anterior con ese id se hayan entregado; si aún
-        // hay un envío activo con ese id, se rechaza (409 vía IllegalStateException).
+        // tanto las maletas quedan como <orderId>-B<n>); si no, se toma el primer
+        // correlativo libre ("000000001", "000000002", …).
+        // El id se reserva en el runner: un id sólo puede reutilizarse una vez que TODAS
+        // las maletas del envío anterior con ese id se hayan entregado; si aún hay un
+        // envío activo con ese id, se rechaza (409 vía IllegalStateException).
         String requestedId = cmd.orderId();
-        String shipmentId  = (requestedId != null && !requestedId.isBlank())
-                ? requestedId.trim() : nextManualShipmentId(now);
-        if (!runner.tryReserveShipmentId(shipmentId, cmd.quantity())) {
-            throw new IllegalStateException(
-                    "Ya existe una orden activa con el id '" + shipmentId + "'. Sólo se puede "
-                    + "reutilizar ese id una vez que todas sus maletas hayan sido entregadas.");
+        String shipmentId;
+        if (requestedId != null && !requestedId.isBlank()) {
+            shipmentId = requestedId.trim();
+            if (!runner.tryReserveShipmentId(shipmentId, cmd.quantity())) {
+                throw new IllegalStateException(
+                        "Ya existe una orden activa con el id '" + shipmentId + "'. Sólo se puede "
+                        + "reutilizar ese id una vez que todas sus maletas hayan sido entregadas.");
+            }
+        } else {
+            shipmentId = reserveNextSequentialId(runner, cmd.quantity());
         }
 
         ShipmentDataDTO data = new ShipmentDataDTO(
@@ -610,11 +615,27 @@ public class RunSimulationUseCase implements SimulationControlPort {
     }
 
     /**
-     * Id legible para órdenes manuales: {@code MAN-YYYYMMDD-NNNN}. El prefijo "MAN"
-     * lo distingue de los ids numéricos de los envíos del archivo/BD.
+     * Reserva y devuelve el primer id correlativo LIBRE, en el formato numérico de 9
+     * cifras con ceros a la izquierda: {@code 000000001}, {@code 000000002}, …
+     *
+     * <p>"Libre" = sin un envío activo con ese id. Se salta los ids ocupados, vengan de
+     * otra orden correlativa o de un id de pedido explícito del archivo; y un id vuelve a
+     * quedar libre cuando se entrega la última maleta de su envío, así que puede
+     * reutilizarse más adelante.</p>
+     *
+     * <p>Cada intento es un {@code putIfAbsent} atómico, así que dos órdenes simultáneas
+     * nunca obtienen el mismo correlativo. El sondeo arranca siempre en 1 (es lineal en el
+     * nº de envíos activos, que en la operación día a día se mantiene acotado porque los
+     * ids se liberan al entregarse).</p>
      */
-    private String nextManualShipmentId(Instant now) {
-        return String.format("MAN-%s-%04d", MANUAL_ID_FMT.format(now), manualShipmentSeq.incrementAndGet());
+    private String reserveNextSequentialId(SimulationRunner runner, int quantity) {
+        for (int n = 1; n <= MAX_SHIPMENT_ID; n++) {
+            String candidate = String.format("%0" + SHIPMENT_ID_DIGITS + "d", n);
+            if (runner.tryReserveShipmentId(candidate, quantity)) return candidate;
+        }
+        throw new IllegalStateException(
+                "No hay ids de envío disponibles: se agotaron los correlativos de "
+                + SHIPMENT_ID_DIGITS + " cifras.");
     }
 
     /**

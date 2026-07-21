@@ -576,7 +576,20 @@ public class RunSimulationUseCase implements SimulationControlPort {
 
         String clientId = (cmd.clientId() == null || cmd.clientId().isBlank())
                 ? "OPERARIO" : cmd.clientId().trim();
-        String shipmentId = nextManualShipmentId(now);
+
+        // Id del envío: si la orden trae un id de pedido explícito se usa ese (y por
+        // tanto las maletas quedan como <orderId>-B<n>); si no, se genera uno automático.
+        // El id se reserva en el runner: un id explícito sólo puede reutilizarse una vez
+        // que TODAS las maletas del envío anterior con ese id se hayan entregado; si aún
+        // hay un envío activo con ese id, se rechaza (409 vía IllegalStateException).
+        String requestedId = cmd.orderId();
+        String shipmentId  = (requestedId != null && !requestedId.isBlank())
+                ? requestedId.trim() : nextManualShipmentId(now);
+        if (!runner.tryReserveShipmentId(shipmentId, cmd.quantity())) {
+            throw new IllegalStateException(
+                    "Ya existe una orden activa con el id '" + shipmentId + "'. Sólo se puede "
+                    + "reutilizar ese id una vez que todas sus maletas hayan sido entregadas.");
+        }
 
         ShipmentDataDTO data = new ShipmentDataDTO(
                 shipmentId, now, origin, dest, cmd.quantity(), clientId, deliveryTypes);

@@ -17,10 +17,16 @@ package com.tasf.b2b.application.port.in;
  * @param operatorUsername username del operario logueado. Si coincide con el nombre de
  *                         una ciudad de la red, esa ciudad es el origen de la orden
  *                         (cada usuario es el operador de su ciudad).
+ * @param orderId          id de pedido explícito (opcional). Si viene, se usa como id
+ *                         del envío (y por tanto de sus maletas: {@code <orderId>-B<n>}).
+ *                         Un id sólo puede reutilizarse una vez que todas las maletas del
+ *                         envío anterior con ese id se hayan entregado. Si es null/vacío,
+ *                         se genera un id automático {@code MAN-YYYYMMDD-NNNN}.
  */
 public record InjectShipmentCommand(
         String originIcao,
         String destIcao,
         int    quantity,
         String clientId,
-        String operatorUsername) {}
+        String operatorUsername,
+        String orderId) {}

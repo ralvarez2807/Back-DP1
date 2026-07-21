@@ -36,4 +36,14 @@ public interface FlightAdminPort {
      */
     FlightScheduleDataDTO updateFlight(String scheduleId, LocalTime depTimeLocal,
                                        LocalTime arrTimeLocal, Integer capacity);
+
+    /**
+     * Elimina un vuelo (schedule) del catálogo: lo borra de la BD y de la lista
+     * compartida en memoria (deja de estar disponible para nuevas sesiones) y propaga
+     * el borrado a toda sesión activa, cancelando sus instancias futuras ya expandidas
+     * y replanificando las maletas afectadas (LE-27).
+     *
+     * @throws IllegalArgumentException si el scheduleId no existe
+     */
+    void deleteFlight(String scheduleId);
 }

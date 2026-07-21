@@ -24,6 +24,7 @@ import java.util.List;
  * POST   /api/v1/admin/flights?mode=replace|merge   → sube vuelos programados (archivo)
  * POST   /api/v1/admin/flights/single               → crea un vuelo individual
  * PUT    /api/v1/admin/flights/:scheduleId          → modifica horario/capacidad de un vuelo
+ * DELETE /api/v1/admin/flights/:scheduleId          → elimina un vuelo programado
  * POST   /api/v1/admin/shipments                    → carga histórica (solo si tabla vacía)
  * DELETE /api/v1/admin/shipments                    → borra todos los shipments
  */
@@ -116,6 +117,12 @@ public class DataLoadController {
         FlightScheduleDataDTO created = flightAdminPort.createFlight(
                 req.originIcao(), req.destIcao(), dep, arr, req.capacity());
         return RouteResponse.from(created);
+    }
+
+    @DeleteMapping("/flights/{scheduleId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteFlight(@PathVariable String scheduleId) {
+        flightAdminPort.deleteFlight(scheduleId);
     }
 
     @PutMapping("/flights/{scheduleId}")

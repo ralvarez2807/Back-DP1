@@ -85,8 +85,11 @@ public class OperationsController {
      * @param destIcao   ICAO del aeropuerto de destino (requerido)
      * @param quantity   cantidad de maletas (> 0)
      * @param clientId   identificador opcional del cliente/operario
+     * @param orderId    id de pedido explícito (opcional). Si viene, se usa como id del
+     *                   envío y de sus maletas; reutilizable sólo tras entregar el anterior.
      */
-    record CreateOrderRequest(String originIcao, String destIcao, Integer quantity, String clientId) {}
+    record CreateOrderRequest(String originIcao, String destIcao, Integer quantity,
+                              String clientId, String orderId) {}
 
     record CreateOrderResponse(String shipmentId, List<String> baggageIds, String originIcao,
                                String destIcao, int quantity, Instant entryTime) {}
@@ -112,12 +115,14 @@ public class OperationsController {
         String username    = principal != null ? principal.getName() : null;
         String clientId    = (req.clientId() != null && !req.clientId().isBlank())
                 ? req.clientId() : (username != null ? username : "OPERARIO");
+        String orderId     = (req.orderId() != null && !req.orderId().isBlank())
+                ? req.orderId().trim() : null;
 
         SimulationSession session = dailyOps.ensureRunning();
 
         InjectShipmentResult result = controlPort.injectShipment(
                 session.getId(),
-                new InjectShipmentCommand(originIcao, destIcao, req.quantity(), clientId, username));
+                new InjectShipmentCommand(originIcao, destIcao, req.quantity(), clientId, username, orderId));
 
         // Persistencia en BD (LE-36): antes de esto la orden solo vivía en RAM del
         // motor de simulación y se perdía al reiniciar el servidor.

@@ -7,6 +7,7 @@ import com.tasf.b2b.application.usecase.SimulationSession;
 import com.tasf.b2b.domain.model.graph.immovable.AirportDataDTO;
 import com.tasf.b2b.domain.model.graph.immovable.FlightScheduleDataDTO;
 import com.tasf.b2b.domain.simulator.SimulationClock;
+import com.tasf.b2b.domain.simulator.event.FlightScheduleRemovedEvent;
 import com.tasf.b2b.domain.simulator.event.FlightScheduleUpdatedEvent;
 import com.tasf.b2b.infrastructure.persistence.entity.reference.FlightScheduleEntity;
 import com.tasf.b2b.infrastructure.persistence.repository.FlightScheduleJpaRepository;
@@ -103,5 +104,28 @@ public class DbFlightAdminService implements FlightAdminPort {
         System.out.printf("[FLIGHTS] Vuelo %s actualizado → %s (%d sesión(es) activa(s) notificada(s))%n",
                 scheduleId, updated.getId(), registry.all().size());
         return updated;
+    }
+
+    @Override
+    @Transactional
+    public void deleteFlight(String scheduleId) {
+        if (!flightRepo.existsById(scheduleId))
+            throw new IllegalArgumentException("Vuelo no encontrado: " + scheduleId);
+
+        flightRepo.deleteById(scheduleId);
+
+        // Lista compartida (nuevas sesiones a partir de ahora ya no lo ven).
+        runSimulationUseCase.getFlights().removeIf(f -> f.getId().equals(scheduleId));
+
+        // Sesiones activas: cada una recibe el evento en su propio hilo runner
+        // (la mutación del grafo solo es segura desde ahí). Cancela las instancias
+        // futuras del schedule y replanifica sus maletas (LE-27).
+        for (SimulationSession session : registry.all()) {
+            SimulationClock clock = session.getRunner().getClock();
+            session.getRunner().submit(new FlightScheduleRemovedEvent(clock.now(), scheduleId, clock));
+        }
+
+        System.out.printf("[FLIGHTS] Vuelo %s eliminado (%d sesión(es) activa(s) notificada(s))%n",
+                scheduleId, registry.all().size());
     }
 }

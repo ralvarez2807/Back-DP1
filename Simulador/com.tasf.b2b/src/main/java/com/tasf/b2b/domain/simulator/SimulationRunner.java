@@ -51,6 +51,14 @@ public class SimulationRunner implements Runnable {
     // IDs entregados para chequeo O(1) en el evento de deadline (SLA).
     private final Set<String>   deliveredIds;
 
+    // Envíos manuales activos: id de envío → nº de maletas aún NO entregadas. Se reserva
+    // al inyectar una orden (tryReserveShipmentId) y se decrementa al entregar cada maleta;
+    // cuando llega a 0 la entrada se elimina y ese id vuelve a estar libre para reutilizar.
+    // ConcurrentHashMap: lo escribe el hilo del runner (entregas) y lo lee/escribe el hilo
+    // HTTP al reservar un id en una orden entrante.
+    private final Map<String, Integer> activeShipmentRemaining =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     // Maletas que llegaron a su destino final y esperan la ventana de recojo
     // (pickupMinutes) antes de ser entregadas al pasajero. Durante esa ventana siguen
     // ocupando físicamente el almacén (cuentan en la ocupación) — se retiran al pickup.
@@ -131,6 +139,7 @@ public class SimulationRunner implements Runnable {
             case FlightArrivalEvent    e -> handleFlightArrival(e);
             case FlightCancelledEvent  e -> handleFlightCancelled(e);
             case FlightScheduleUpdatedEvent e -> handleFlightScheduleUpdated(e);
+            case FlightScheduleRemovedEvent e -> handleFlightScheduleRemoved(e);
             case BaggagePickupEvent    e -> handleBaggagePickup(e);
             case NewShipmentEvent      e -> handleNewShipment(e);
             case SlaDeadlineEvent      e -> handleSlaDeadline(e);
@@ -266,6 +275,10 @@ public class SimulationRunner implements Runnable {
         awaitingPickup.remove(baggage.getId());   // termina la ventana de recojo
         deliveredBaggages.add(baggage);
         deliveredIds.add(baggage.getId());
+        // Descuenta esta maleta del envío activo; al entregarse la última, libera el id
+        // (queda disponible para que una nueva orden lo reutilice).
+        String shId = baggage.getShipment().getShipmentData().getId();
+        activeShipmentRemaining.computeIfPresent(shId, (k, remaining) -> remaining <= 1 ? null : remaining - 1);
         baggage.recordHistory(clock.now(), "DELIVERED", e.getDestIcao(), null);
         log("Maleta entregada: " + baggage.getId());
         publisher.publish(new BaggageDeliveredDTO(
@@ -320,6 +333,31 @@ public class SimulationRunner implements Runnable {
         for (FlightEdge fe : stale) {
             handleFlightCancelled(new FlightCancelledEvent(
                     clock.now(), oldId, fe.getFromNode().getTimeUtc(), clock));
+        }
+    }
+
+    // Elimina un schedule recurrente de esta sesión (LE — borrado de vuelos). Cancela sus
+    // instancias ya expandidas y aún no partidas (replanificando sus maletas) y retira el
+    // schedule del grafo para que no se vuelva a expandir. No registra reemplazo.
+    private void handleFlightScheduleRemoved(FlightScheduleRemovedEvent e) {
+        String scheduleId = e.getScheduleId();
+
+        List<FlightEdge> stale = new ArrayList<>();
+        for (FlightEdge fe : graph.getAllFlightEdges()) {
+            if (!fe.isCancelled()
+                    && fe.getFlightScheduleData().getId().equals(scheduleId)
+                    && fe.getFromNode().getTimeUtc().isAfter(clock.now())) {
+                stale.add(fe);
+            }
+        }
+
+        graph.removeScheduledFlight(scheduleId);
+        log("Schedule eliminado: " + scheduleId
+                + " (" + stale.size() + " instancia(s) futura(s) a replanificar)");
+
+        for (FlightEdge fe : stale) {
+            handleFlightCancelled(new FlightCancelledEvent(
+                    clock.now(), scheduleId, fe.getFromNode().getTimeUtc(), clock));
         }
     }
 
@@ -585,6 +623,19 @@ public class SimulationRunner implements Runnable {
 
         log("Optimización completada - Pendientes: " + pendingCount +
                 ", Asignadas: " + assignedCount);
+    }
+
+    // ── Reserva de ids de envío (órdenes manuales) ─────────────────────────────
+
+    /**
+     * Reserva un id de envío para una orden manual entrante. Devuelve {@code true} si el
+     * id quedó reservado (no había un envío activo con ese id); {@code false} si ya hay
+     * uno activo (sus maletas aún no se entregan todas) — el llamador debe rechazar la
+     * orden. El id se libera solo cuando se entrega la última maleta del envío
+     * (ver {@link #handleBaggagePickup}). Thread-safe (ConcurrentHashMap.putIfAbsent).
+     */
+    public boolean tryReserveShipmentId(String shipmentId, int quantity) {
+        return activeShipmentRemaining.putIfAbsent(shipmentId, Math.max(1, quantity)) == null;
     }
 
     // ── Consultas de estado ───────────────────────────────────────────────────

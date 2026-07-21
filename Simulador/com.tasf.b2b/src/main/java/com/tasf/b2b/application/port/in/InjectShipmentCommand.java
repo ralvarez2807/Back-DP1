@@ -21,7 +21,8 @@ package com.tasf.b2b.application.port.in;
  *                         del envío (y por tanto de sus maletas: {@code <orderId>-B<n>}).
  *                         Un id sólo puede reutilizarse una vez que todas las maletas del
  *                         envío anterior con ese id se hayan entregado. Si es null/vacío,
- *                         se genera un id automático {@code MAN-YYYYMMDD-NNNN}.
+ *                         se toma el primer correlativo libre de 9 cifras
+ *                         ({@code 000000001}, {@code 000000002}, …).
  */
 public record InjectShipmentCommand(
         String originIcao,

@@ -62,8 +62,8 @@ Todos los valores están como constantes en `ALNSAlgorithm.java` salvo donde se 
 | `DECAY_FACTOR` | 0.8 | En `RouletteWheelSelector`: `w ← 0.8×w_ant + 0.2×recompensa` |
 | `REGRET_LIMIT` | 8 maletas | En `RegretInsertion`: si hay más de 8 sin ruta, cae a Greedy |
 | `MAX_HOPS` | 8 vuelos | Máximo de vuelos en una ruta (en `RouteFinder`) |
-| `minConnectionMinutes` | 10 min | Tiempo mínimo de conexión entre vuelos (`SimulationConfig`) |
-| `pickupMinutes` | 10 min | Tiempo de recogida en aeropuerto de origen (`SimulationConfig`) |
+| `minConnectionMinutes` | 10 min | Tiempo mínimo de conexión entre vuelos, **solo en escalas** (`SimulationConfig`) |
+| `pickupMinutes` | 15 min | Tiempo de recogida en el aeropuerto **de destino** (`SimulationConfig`) |
 
 ### Ajuste del tamaño de destrucción `k`
 
@@ -148,8 +148,11 @@ Cada operador intenta enrutar todas las maletas en `solution.unrouted()`:
 ### RouteFinder (búsqueda de rutas)
 
 Usa Dijkstra sobre el grafo espacio-temporal con las siguientes restricciones:
-- Respeta ventanas de conexión (`minConnectionMinutes`)
-- Respeta deadlines de las maletas
+- Respeta ventanas de conexión (`minConnectionMinutes`) **entre tramos**; una maleta recién
+  registrada no tiene margen previo y puede tomar cualquier vuelo que aún no haya salido.
+  El instante en que queda lista lo calcula `AlnsProjectionBuilder.availableFrom`.
+- Respeta deadlines de las maletas, descontando `pickupMinutes` del último tramo (la entrega
+  real es aterrizaje + recogida)
 - Respeta capacidad de los vuelos
 - Máximo 8 vuelos por ruta
 

@@ -692,16 +692,17 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
             boolean past = b.getDeadlineUtc() != null && b.getDeadlineUtc().isBefore(simNow);
             if (b.isRouteComplete() && !past) continue;
 
-            String  status; String currentIcao; Instant availableFrom;
+            String  status; String currentIcao;
             if (b.getCurrentEdge() instanceof FlightEdge fe) {
                 status = "IN_FLIGHT";
-                currentIcao   = fe.getToNode().getIcao();
-                availableFrom = fe.getToNode().getTimeUtc().isAfter(simNow) ? fe.getToNode().getTimeUtc() : simNow;
+                currentIcao = fe.getToNode().getIcao();
             } else if (b.isUnassigned()) {
-                status = "PENDING"; currentIcao = b.getCurrentAirport(); availableFrom = simNow;
+                status = "PENDING"; currentIcao = b.getCurrentAirport();
             } else {
-                status = "WAITING"; currentIcao = b.getCurrentAirport(); availableFrom = simNow;
+                status = "WAITING"; currentIcao = b.getCurrentAirport();
             }
+            // Misma regla que usa el planificador, para que el diagnóstico no discrepe.
+            Instant availableFrom = AlnsProjectionBuilder.availableFrom(b, simNow, connectMinutes);
 
             BaggageState bs = new BaggageState(b.getId(), currentIcao, availableFrom, destIcao, b.getDeadlineUtc());
             List<FlightSnapshot> best = RouteFinder.findFastestIgnoringDeadline(bs, projection);
@@ -738,7 +739,7 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
                 for (var bucket : byTime.values()) {
                     for (FlightSnapshot f : bucket) {
                         if (!f.toIcao().equals(destIcao)) continue;
-                        boolean depOk = !f.depTime().isBefore(availableFrom.plusSeconds(pickupMinutes * 60L));
+                        boolean depOk = !f.depTime().isBefore(availableFrom);
                         boolean arrOk = b.getDeadlineUtc() == null || !f.arrTime().isAfter(b.getDeadlineUtc());
                         boolean capOk = f.remainingCapacity() > 0;
                         boolean usable = depOk && arrOk && capOk;

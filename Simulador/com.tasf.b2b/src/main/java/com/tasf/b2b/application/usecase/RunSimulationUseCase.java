@@ -198,6 +198,9 @@ public class RunSimulationUseCase implements SimulationControlPort {
         // minConnectionMinutes=10: tiempo mínimo de escala — la maleta espera ≥10 min
         // en el aeropuerto de conexión antes de embarcar el siguiente vuelo (lo respeta
         // RouteFinder al planificar rutas con escalas). Requisito del curso (10 min).
+        // Solo aplica a escalas: un envío recién registrado está listo de inmediato y
+        // puede tomar cualquier vuelo que aún no haya salido (ver
+        // AlnsProjectionBuilder.availableFrom).
         // pickupMinutes=15: al llegar a su destino final, la maleta espera 15 min en el
         // almacén hasta ser recogida por el pasajero (y descontada del total almacenado).
         SimulationConfig config = new SimulationConfig(

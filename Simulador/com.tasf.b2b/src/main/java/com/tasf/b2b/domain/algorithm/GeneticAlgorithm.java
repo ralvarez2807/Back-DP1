@@ -109,13 +109,20 @@ public class GeneticAlgorithm {
         return lastEdge.getToNode().getAirport().getIcao().equals(destIcao);
     }
 
+    // Un vuelo sirve para planificar si no está cancelado y le queda al menos un asiento.
+    // La capacidad la hace cumplir SpaceTimeGraph.assignBaggage; filtrarla también aquí
+    // evita proponer rutas que serán rechazadas y dejarían la maleta sin plan.
+    private static boolean isUsable(FlightEdge flight) {
+        return !flight.isCancelled() && flight.getRemainingCapacity() > 0;
+    }
+
     // Método auxiliar para encontrar vuelo directo
     private List<STEdge> findDirectFlight(STNode startNode, String destIcao) {
         List<STEdge> edges = graph.getEdgesFrom(startNode);
         if (edges == null) return null;
 
         for (STEdge edge : edges) {
-            if (edge instanceof FlightEdge &&
+            if (edge instanceof FlightEdge flight && isUsable(flight) &&
                     edge.getToNode().getAirport().getIcao().equals(destIcao)) {
                 List<STEdge> route = new ArrayList<>();
                 route.add(edge);
@@ -154,9 +161,9 @@ public class GeneticAlgorithm {
             for (STEdge edge : edges) {
                 STNode nextNode = edge.getToNode();
 
-                // Filtrar solo vuelos no cancelados
+                // Filtrar vuelos cancelados o sin cupo
                 if (edge instanceof FlightEdge flight) {
-                    if (flight.isCancelled()) continue;
+                    if (!isUsable(flight)) continue;
                 }
 
                 if (!visited.contains(nextNode)) {
@@ -198,7 +205,7 @@ public class GeneticAlgorithm {
 
             for (STEdge edge : edges) {
                 if (edge instanceof FlightEdge flight) {
-                    if (flight.isCancelled()) continue;
+                    if (!isUsable(flight)) continue;
 
                     Instant edgeDeparture = edge.getFromNode().getTimeUtc();
                     Instant edgeArrival = edge.getToNode().getTimeUtc();
@@ -569,10 +576,10 @@ public class GeneticAlgorithm {
             List<STEdge> possibleEdges = graph.getEdgesFrom(currentEdge.getToNode());
             if (possibleEdges.isEmpty()) break;
 
-            // Filtrar solo vuelos no cancelados
+            // Filtrar vuelos cancelados o sin cupo
             List<STEdge> validEdges = new ArrayList<>();
             for (STEdge e : possibleEdges) {
-                if (e instanceof FlightEdge flight && !flight.isCancelled()) {
+                if (e instanceof FlightEdge flight && isUsable(flight)) {
                     validEdges.add(e);
                 } else if (!(e instanceof FlightEdge)) {
                     validEdges.add(e);

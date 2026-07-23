@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 
 import static com.tasf.b2b.TestFixtures.*;
@@ -164,6 +165,134 @@ class SpaceTimeGraphTest {
             assertNotNull(fe.getFromNode());
             assertNotNull(fe.getToNode());
         });
+    }
+
+    // ── assignBaggage: la capacidad del vuelo es un invariante duro ──────────
+
+    // Grafo aparte con un único vuelo SKBO→SEQM de 2 plazas, para llenarlo rápido.
+    private static SpaceTimeGraph grafoConVueloDeCapacidad(int capacidad) {
+        SpaceTimeGraph g = new SpaceTimeGraph();
+        g.addAirport(SKBO);
+        g.addAirport(SEQM);
+        g.addScheduledFlight(new FlightScheduleDataDTO(
+                SKBO, SEQM, java.time.LocalTime.of(8, 0), java.time.LocalTime.of(10, 0), capacidad));
+        g.expandAllFlights(SIM_START);
+        return g;
+    }
+
+    private static FlightEdge vueloDelDia2(SpaceTimeGraph g) {
+        return g.getAllFlightEdges().stream()
+                .filter(fe -> fe.getFromNode().getTimeUtc().equals(DEP_JAN2_UTC))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    @Test
+    void assignBaggage_rechaza_cuando_el_vuelo_esta_lleno() {
+        SpaceTimeGraph g  = grafoConVueloDeCapacidad(2);
+        FlightEdge     fe = vueloDelDia2(g);
+
+        Shipment s = shipment("S1", SKBO, SEQM, SIM_START, 3);
+        g.addShipment(s);
+
+        // Las dos primeras entran, la tercera no: el vuelo tiene 2 plazas
+        for (int i = 0; i < 2; i++) {
+            Baggage b = s.getBaggages().get(i);
+            b.appendExpectedEdge(fe);
+            assertTrue(g.assignBaggage(b), "la maleta " + i + " debería caber");
+        }
+
+        Baggage tercera = s.getBaggages().get(2);
+        tercera.appendExpectedEdge(fe);
+
+        assertFalse(g.assignBaggage(tercera), "el vuelo ya está lleno");
+        assertEquals(2, fe.getLoad(), "un rechazo no debe incrementar la carga");
+        assertEquals(fe.getCapacity(), fe.getLoad());
+    }
+
+    @Test
+    void assignBaggage_rechazado_deja_la_maleta_en_pending() {
+        SpaceTimeGraph g  = grafoConVueloDeCapacidad(1);
+        FlightEdge     fe = vueloDelDia2(g);
+
+        Shipment s = shipment("S1", SKBO, SEQM, SIM_START, 2);
+        g.addShipment(s);
+
+        Baggage primera = s.getBaggages().get(0);
+        primera.appendExpectedEdge(fe);
+        g.assignBaggage(primera);
+
+        Baggage segunda = s.getBaggages().get(1);
+        segunda.appendExpectedEdge(fe);
+        assertFalse(g.assignBaggage(segunda));
+
+        assertTrue(g.getPendingBaggages().contains(segunda),
+                "la maleta rechazada sigue pendiente, lista para re-enrutar");
+        assertFalse(g.getAssignedBaggages().contains(segunda));
+    }
+
+    @Test
+    void assignBaggage_no_reserva_ningun_tramo_si_uno_de_ellos_no_tiene_cupo() {
+        // Ruta de dos tramos donde el segundo está lleno: el primero no debe quedar
+        // con un asiento reservado por una ruta que nunca se aplicó.
+        SpaceTimeGraph g = new SpaceTimeGraph();
+        g.addAirport(SKBO);
+        g.addAirport(SEQM);
+        g.addAirport(EHAM);
+        g.addScheduledFlight(new FlightScheduleDataDTO(
+                SKBO, SEQM, java.time.LocalTime.of(8, 0), java.time.LocalTime.of(10, 0), 10));
+        g.addScheduledFlight(new FlightScheduleDataDTO(
+                SEQM, EHAM, java.time.LocalTime.of(12, 0), java.time.LocalTime.of(6, 0), 1));
+        g.expandAllFlights(SIM_START);
+
+        FlightEdge tramo1 = g.getAllFlightEdges().stream()
+                .filter(fe -> fe.getFromNode().getIcao().equals("SKBO")
+                        && fe.getFromNode().getTimeUtc().equals(DEP_JAN2_UTC))
+                .findFirst().orElseThrow();
+        FlightEdge tramo2 = g.getAllFlightEdges().stream()
+                .filter(fe -> fe.getFromNode().getIcao().equals("SEQM"))
+                .min(Comparator.comparing(fe -> fe.getFromNode().getTimeUtc()))
+                .orElseThrow();
+
+        Shipment s = shipment("S1", SKBO, EHAM, SIM_START, 2);
+        g.addShipment(s);
+
+        // La primera ocupa la única plaza del segundo tramo
+        Baggage primera = s.getBaggages().get(0);
+        primera.appendExpectedEdge(tramo1);
+        primera.appendExpectedEdge(tramo2);
+        assertTrue(g.assignBaggage(primera));
+
+        int cargaTramo1Antes = tramo1.getLoad();
+
+        Baggage segunda = s.getBaggages().get(1);
+        segunda.appendExpectedEdge(tramo1);
+        segunda.appendExpectedEdge(tramo2);
+
+        assertFalse(g.assignBaggage(segunda), "el segundo tramo está lleno");
+        assertEquals(cargaTramo1Antes, tramo1.getLoad(),
+                "el primer tramo no debe quedar con una reserva huérfana");
+    }
+
+    @Test
+    void assignBaggage_nunca_deja_la_carga_por_encima_de_la_capacidad() {
+        SpaceTimeGraph g  = grafoConVueloDeCapacidad(5);
+        FlightEdge     fe = vueloDelDia2(g);
+
+        Shipment s = shipment("S1", SKBO, SEQM, SIM_START, 20);
+        g.addShipment(s);
+
+        int aceptadas = 0;
+        for (Baggage b : s.getBaggages()) {
+            b.appendExpectedEdge(fe);
+            if (g.assignBaggage(b)) aceptadas++;
+            else                    b.clearExpectedRoute();
+        }
+
+        assertEquals(5, aceptadas, "solo caben tantas maletas como asientos");
+        assertEquals(5, fe.getLoad());
+        assertTrue(fe.getLoad() <= fe.getCapacity());
+        assertEquals(15, g.getPendingBaggages().size(), "el resto queda pendiente");
     }
 
     // ── addShipment ──────────────────────────────────────────────────────────

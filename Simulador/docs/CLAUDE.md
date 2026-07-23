@@ -81,6 +81,6 @@ All graph times are stored as `java.time.Instant` (UTC). Flight schedules use `L
 - `getEdgesFrom(STNode)` — outgoing edges for BFS/DFS in repair operators.
 - `getAllNodes()` — all current nodes for global destroy operators.
 - `getPendingBaggages()` / `getAssignedBaggages()` — priority queues sorted by deadline (most urgent first).
-- `assignBaggage(Baggage)` / `unassignBaggage(Baggage)` / `unassignBaggageFrom(Baggage, int)` — move baggages between pending/assigned queues.
+- `assignBaggage(Baggage)` / `unassignBaggage(Baggage)` / `unassignBaggageFrom(Baggage, int)` — move baggages between pending/assigned queues. `assignBaggage` is the **only** place `FlightEdge.load` is incremented and it enforces capacity as a hard invariant: it returns `false` (mutating nothing) if any leg of `expectedRoute` is full, leaving the baggage pending. Callers must clear the route and let the next cycle re-plan.
 - `getBaggagesAffectedBy(String flightKey)` — find baggages whose planned route uses a cancelled flight.
 - `cancelFlight(String scheduleKey, Instant depTimeUtc)` — removes a `FlightEdge` from adjacency. Pending cancellations (beyond `horizonCompleted`) are queued and applied on next expansion.

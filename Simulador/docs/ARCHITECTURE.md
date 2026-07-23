@@ -41,7 +41,7 @@ Nodos y aristas del grafo espacio-temporal.
 |---|---|
 | `STNode` | Punto `(aeropuerto, instante UTC)`. Equals/hashCode por `(icao, timeUtc)`. |
 | `STEdge` | Arista abstracta. Tiene `fromNode` y `toNode`. |
-| `FlightEdge` | Arista de vuelo: capacidad, `load` (ocupación planificada — mantenido por `assignBaggage`/`unassignBaggage`), flag `cancelled`, ID con fecha (`SKBO-SEQM-19:00-20260102`). |
+| `FlightEdge` | Arista de vuelo: capacidad, `load` (ocupación planificada — mantenido por `assignBaggage`/`unassignBaggage`; `assignBaggage` rechaza la ruta si algún tramo está lleno, así `load ≤ capacity` siempre), flag `cancelled`, ID con fecha (`SKBO-SEQM-19:00-20260102`). |
 | `WaitEdge` | Arista de espera en el mismo aeropuerto entre dos eventos consecutivos. `dynamicLoad` cuenta baggages actualmente esperando (mantenido por el runner en salida/llegada). Se reconstruye automáticamente al insertar un nodo nuevo entre otros dos. |
 
 ---

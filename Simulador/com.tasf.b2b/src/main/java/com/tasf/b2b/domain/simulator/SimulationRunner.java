@@ -521,6 +521,7 @@ public class SimulationRunner implements Runnable {
         Instant now     = clock.now();
         int stale       = 0;
         int applied     = 0;
+        int overbooked  = 0;
         int proposed    = e.getRoutes().size();
 
         for (Map.Entry<Baggage, List<STEdge>> entry : e.getRoutes().entrySet()) {
@@ -548,7 +549,14 @@ public class SimulationRunner implements Runnable {
             for (STEdge edge : route) {
                 baggage.appendExpectedEdge(edge);
             }
-            graph.assignBaggage(baggage);
+            // El ALNS resolvió sobre un snapshot: entre medias pudieron ocuparse las
+            // plazas (otra solución, o el fallback genético). Si ya no cabe, se descarta
+            // la ruta y la maleta vuelve a pending para el siguiente ciclo.
+            if (!graph.assignBaggage(baggage)) {
+                baggage.clearExpectedRoute();
+                overbooked++;
+                continue;
+            }
             applied++;
 
             List<String> flightIds = route.stream()
@@ -566,10 +574,10 @@ public class SimulationRunner implements Runnable {
         totalApplied  += applied;
 
         log(String.format(
-                "ALNS #%d | propuestas: %d | obsoletas: %d (%.0f%%) | aplicadas: %d | sin-ruta(ALNS): %d | score: %.1f",
+                "ALNS #%d | propuestas: %d | obsoletas: %d (%.0f%%) | sin-cupo: %d | aplicadas: %d | sin-ruta(ALNS): %d | score: %.1f",
                 solutionCount, proposed,
                 stale, proposed > 0 ? 100.0 * stale / proposed : 0.0,
-                applied, e.getUnroutedCount(), e.getAlnsScore()));
+                overbooked, applied, e.getUnroutedCount(), e.getAlnsScore()));
     }
 
     // Colapso por desborde de almacén: si el número de maletas físicamente esperando

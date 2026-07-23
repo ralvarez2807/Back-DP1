@@ -474,12 +474,34 @@ public class SpaceTimeGraph {
     // ── Gestión de baggages ───────────────────────────────────────────────────
     // Mueve un baggage de pending a assigned. expectedRoute ya debe estar seteado.
     // Registra la ocupación planificada en cada FlightEdge de la ruta.
-    public void assignBaggage(Baggage baggage) {
+    //
+    // La capacidad de los vuelos es un invariante duro y este es el único punto donde
+    // se incrementa la carga, así que se valida aquí: los planificadores buscan sobre
+    // snapshots (el ALNS) o directamente sin mirar capacidad (el GA), y entre que
+    // proponen una ruta y se aplica pueden haberse ocupado las plazas. Sin esta
+    // verificación un vuelo terminaba con más maletas que asientos (p. ej. 164/150).
+    //
+    // Devuelve false si algún tramo no tiene sitio; en ese caso NO se muta nada y el
+    // baggage queda como estaba (pendiente), para que el siguiente ciclo lo re-enrute.
+    public boolean assignBaggage(Baggage baggage) {
+        // Se cuenta la demanda por arista antes de tocar cargas: validar y aplicar en
+        // la misma pasada dejaría asientos reservados en los tramos ya incrementados
+        // si un tramo posterior resultara lleno.
+        Map<FlightEdge, Integer> demand = new LinkedHashMap<>();
         for (STEdge e : baggage.getExpectedRoute()) {
-            if (e instanceof FlightEdge fe) fe.assign(); // FlightEdge.load++
+            if (e instanceof FlightEdge fe) demand.merge(fe, 1, Integer::sum);
+        }
+
+        for (Map.Entry<FlightEdge, Integer> entry : demand.entrySet()) {
+            if (entry.getKey().getRemainingCapacity() < entry.getValue()) return false;
+        }
+
+        for (Map.Entry<FlightEdge, Integer> entry : demand.entrySet()) {
+            for (int i = 0; i < entry.getValue(); i++) entry.getKey().assign(); // FlightEdge.load++
         }
         this.pendingBaggages.remove(baggage);
         this.assignedBaggages.add(baggage);
+        return true;
     }
 
     // Mueve un baggage de assigned a pending. Libera la ocupación planificada
@@ -673,7 +695,13 @@ public class SpaceTimeGraph {
                 // Setearla al vuelo hacía que al partir se liberara el asiento en vez
                 // del almacén, y al llegar se liberara de nuevo → load negativo.
                 baggage.setExpectedRoute(flights);
-                assignBaggage(baggage);
+                // El GA busca sin mirar capacidad; assignBaggage es quien la hace cumplir.
+                if (!assignBaggage(baggage)) {
+                    System.out.println("[WARN] Ruta sin cupo descartada: " + baggage.getId());
+                    baggage.clearExpectedRoute();
+                    failed++;
+                    continue;
+                }
                 assigned++;
             } else {
                 failed++;

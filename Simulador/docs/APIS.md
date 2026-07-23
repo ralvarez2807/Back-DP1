@@ -59,8 +59,8 @@ Base URL: `http://localhost:8080/api/v1`
 | ✅ | GET | `/operations` | sesión "Operación Día a Día" en vivo (la crea si no existe) |
 | ✅ | POST | `/operations/orders` | carga manual de una orden de maletas (destino + cantidad; origen = ciudad del operario); persiste en `live.shipments` |
 | ⏳ | POST | `/admin/airports/single` | crea un aeropuerto individual |
-| ⏳ | POST | `/admin/flights/single` | crea un vuelo (schedule) individual |
-| ⏳ | PUT | `/admin/flights/:scheduleId` | modifica horario/capacidad de un vuelo existente, dispara replanificación |
+| ✅ | POST | `/admin/flights/single` | crea un vuelo (schedule) individual, disponible en caliente |
+| ✅ | PUT | `/admin/flights/:scheduleId` | modifica horario/capacidad de un vuelo existente, dispara replanificación |
 | ⏳ | GET | `/simulations/:id/baggage/:baggageId/history` | log de transiciones de estado de una maleta |
 | ⏳ | POST | `/simulations/:id/disruptions` | `kind=CANCELLATION` usa `scheduleId` sin fecha (resuelve hoy/mañana); `AVERIA` sigue usando `flightId` |
 | ⏳ | POST | `/simulations/:id/disruptions/bulk` | inyecta una lista de disrupciones en un solo request |
@@ -151,9 +151,13 @@ aeropuertos primero.") **o** si el archivo no contiene vuelos válidos — este 
 devuelve `400` para ambos casos (no `409`, a diferencia de la convención general de
 `IllegalStateException → 409` que sí aplica en `POST /admin/shipments`).
 
+**Propagación:** tras persistir, el catálogo en memoria se resincroniza desde BD y el diff
+(altas, bajas y cambios de capacidad/llegada) se propaga a las sesiones activas. Ya no hace
+falta reiniciar el backend para que la carga por archivo surta efecto.
+
 ---
 
-### POST /admin/flights/single — ⏳ (LE-10)
+### POST /admin/flights/single — ✅ (LE-10)
 
 Crea un vuelo (schedule recurrente) individual.
 
@@ -163,6 +167,12 @@ Body:
 ```
 
 Response `201`: mismo shape que `GET /data/routes`. El `id` se genera igual que hoy: `"ORIG-DEST-HH:mm"`.
+
+**Propagación:** el vuelo queda disponible sin reiniciar el backend, tanto para las sesiones
+futuras (lista compartida en memoria) como para las **ya en ejecución** — incluida la operación
+día a día. En cada sesión activa se materializan sus instancias dentro del horizonte ya
+expandido y se corre un ciclo de optimización, así las maletas pendientes pueden usarlo de
+inmediato. Las salidas que ya pasaron en tiempo de simulación se omiten.
 
 Errores: `400` · `404` (ICAO de origen o destino no existe) · `409` (ya existe un schedule con ese id)
 

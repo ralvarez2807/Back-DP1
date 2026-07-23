@@ -64,6 +64,76 @@ class SpaceTimeGraphTest {
         assertEquals(ARR_JAN2_UTC, fe.getToNode().getTimeUtc());
     }
 
+    // ── expandSingleSchedule (alta de vuelo en sesión en curso) ──────────────
+
+    @Test
+    void expandSingleSchedule_materializa_instancias_dentro_del_horizonte_ya_expandido() {
+        graph.addAirport(EHAM);
+        graph.expandAllFlights(SIM_START);   // horizonte = Jan 2..5
+
+        FlightScheduleDataDTO nuevo = schedSEQM_EHAM();
+        List<FlightEdge> creados = graph.expandSingleSchedule(nuevo, SIM_START);
+
+        // Mismo alcance que una expansión normal: un vuelo por día del horizonte
+        assertEquals(4, creados.size());
+        assertTrue(creados.stream().allMatch(fe -> fe.getFlightScheduleData().getId().equals(nuevo.getId())));
+        assertTrue(creados.stream().allMatch(fe -> !fe.isCancelled()));
+    }
+
+    @Test
+    void expandSingleSchedule_omite_las_salidas_anteriores_al_momento_actual() {
+        graph.addAirport(EHAM);
+        graph.expandAllFlights(SIM_START);
+
+        // SEQM→EHAM sale 12:00 local (GMT-5) = 17:00 UTC. Si "ahora" es Jan 3 20:00 UTC,
+        // las salidas de Jan 2 y Jan 3 ya pasaron: solo quedan Jan 4 y Jan 5.
+        Instant ahora = Instant.parse("2026-01-03T20:00:00Z");
+        List<FlightEdge> creados = graph.expandSingleSchedule(schedSEQM_EHAM(), ahora);
+
+        assertEquals(2, creados.size());
+        assertTrue(creados.stream().allMatch(fe -> !fe.getFromNode().getTimeUtc().isBefore(ahora)));
+    }
+
+    @Test
+    void expandSingleSchedule_no_duplica_instancias_de_un_schedule_ya_expandido() {
+        graph.expandAllFlights(SIM_START);
+
+        // sched ya fue expandido por expandAllFlights: re-agregarlo no debe crear nada
+        List<FlightEdge> creados = graph.expandSingleSchedule(sched, SIM_START);
+
+        assertTrue(creados.isEmpty());
+    }
+
+    @Test
+    void expandSingleSchedule_queda_registrado_para_las_proximas_expansiones() {
+        graph.addAirport(EHAM);
+        graph.expandAllFlights(SIM_START);
+
+        FlightScheduleDataDTO nuevo = schedSEQM_EHAM();
+        graph.expandSingleSchedule(nuevo, SIM_START);
+
+        // Avanzar un día: la expansión normal debe seguir produciendo el vuelo nuevo
+        List<FlightEdge> siguienteDia = graph.expandAllFlights(SIM_START.plusSeconds(86400));
+
+        assertTrue(siguienteDia.stream()
+                .anyMatch(fe -> fe.getFlightScheduleData().getId().equals(nuevo.getId())));
+    }
+
+    @Test
+    void expandSingleSchedule_sin_expansion_previa_no_crea_nada_pero_registra() {
+        graph.addAirport(EHAM);
+
+        FlightScheduleDataDTO nuevo = schedSEQM_EHAM();
+        List<FlightEdge> creados = graph.expandSingleSchedule(nuevo, SIM_START);
+
+        // Sesión que aún no expandió: la primera expansión se encarga
+        assertTrue(creados.isEmpty());
+
+        List<FlightEdge> primeraExpansion = graph.expandAllFlights(SIM_START);
+        assertTrue(primeraExpansion.stream()
+                .anyMatch(fe -> fe.getFlightScheduleData().getId().equals(nuevo.getId())));
+    }
+
     @Test
     void expandAllFlights_crea_waitEdge_entre_nodos_consecutivos_mismo_aeropuerto() {
         graph.expandAllFlights(SIM_START);

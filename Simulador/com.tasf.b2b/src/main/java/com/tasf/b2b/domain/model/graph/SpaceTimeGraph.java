@@ -127,6 +127,64 @@ public class SpaceTimeGraph {
         this.flightsSchedule.put(flightScheduleData.getId(), flightScheduleData); //Datos fijos de los flight diarios
     }
 
+    // Registra un horario recurrente en una sesión ya en curso y materializa sus instancias
+    // dentro de la ventana que ya se expandió, [fromTime, horizonCompleted). Sin esto el vuelo
+    // nuevo solo existiría a partir de la próxima expansión — es decir, recién dentro de
+    // horizonDays — y no serviría para replanificar lo que ya está pendiente.
+    // Las salidas anteriores a fromTime se omiten: un vuelo que ya partió no es ruta posible.
+    // Devuelve las aristas creadas para que el runner les programe salida/llegada.
+    public List<FlightEdge> expandSingleSchedule(FlightScheduleDataDTO flightScheduleData, Instant fromTime) {
+        addScheduledFlight(flightScheduleData);
+
+        List<FlightEdge> newEdges = new ArrayList<>();
+        // Sesión que aún no expandió nada: la primera expansión ya lo incluirá.
+        if (this.horizonCompleted.equals(Instant.MIN)) return newEdges;
+
+        AirportDataDTO orig = this.airports.get(flightScheduleData.getOriginAirport().getIcao());
+        AirportDataDTO dest = this.airports.get(flightScheduleData.getDestAirport().getIcao());
+
+        if (orig == null || dest == null)
+            throw new IllegalArgumentException(
+                    "Aeropuerto no registrado: " + flightScheduleData.getOriginAirport().getIcao()
+                            + " o " + flightScheduleData.getDestAirport().getIcao());
+
+        Instant dayCursor = fromTime.truncatedTo(ChronoUnit.DAYS);
+
+        while (dayCursor.isBefore(this.horizonCompleted)) {
+            Instant depUtc = TimeUtils.combineDateAndLocalTime(
+                    dayCursor, flightScheduleData.getDepartureTimeLocal(), orig.getGmtOffset());
+            Instant arrUtc = TimeUtils.combineDateAndLocalTime(
+                    dayCursor, flightScheduleData.getArrivalTimeLocal(), dest.getGmtOffset());
+
+            // Vuelo nocturno: llegada cae al día siguiente
+            if (arrUtc.isBefore(depUtc)) {
+                arrUtc = arrUtc.plus(1, ChronoUnit.DAYS);
+            }
+
+            // Si ya hay una instancia viva de este schedule a esa hora, no se duplica: dos
+            // FlightEdge del mismo vuelo en adyacencia dejarían capacidad fantasma en el grafo.
+            TreeMap<Instant, FlightEdge> existing = this.flightIndex.get(flightScheduleData.getId());
+            FlightEdge alreadyThere = (existing != null) ? existing.get(depUtc) : null;
+            boolean duplicate = alreadyThere != null && !alreadyThere.isCancelled();
+
+            if (!depUtc.isBefore(fromTime) && !duplicate) {
+                STNode fromNode = this.getOrCreateNode(orig, depUtc);
+                STNode toNode = this.getOrCreateNode(dest, arrUtc);
+
+                FlightEdge edge = new FlightEdge(flightScheduleData, fromNode, toNode);
+
+                this.adjEdges.get(fromNode).add(edge);
+                this.flightIndex.computeIfAbsent(flightScheduleData.getId(), k -> new TreeMap<>())
+                        .put(depUtc, edge);
+                newEdges.add(edge);
+            }
+
+            dayCursor = dayCursor.plus(1, ChronoUnit.DAYS);
+        }
+
+        return newEdges;
+    }
+
     // Retira un horario recurrente: no se expandirán más días para este id (LE-12).
     // Las FlightEdge ya expandidas para este id no se tocan aquí — cancélalas aparte
     // con cancelFlight si corresponde.

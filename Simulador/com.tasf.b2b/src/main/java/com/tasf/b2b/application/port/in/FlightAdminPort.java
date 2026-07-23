@@ -14,14 +14,23 @@ import java.time.LocalTime;
 public interface FlightAdminPort {
 
     /**
-     * Crea un vuelo (schedule) nuevo. Queda disponible de inmediato para las sesiones
-     * que se creen a partir de este momento (no se propaga a sesiones ya en ejecución).
+     * Crea un vuelo (schedule) nuevo. Queda disponible tanto para las sesiones que se creen
+     * a partir de este momento como para las que ya están en ejecución: en estas últimas se
+     * materializan sus instancias dentro del horizonte ya expandido y se dispara un ciclo de
+     * optimización, de modo que las maletas pendientes puedan usarlo sin reiniciar (LE-10).
      *
      * @throws IllegalArgumentException si el ICAO de origen o destino no existe
      * @throws IllegalStateException    si ya existe un schedule con ese id (ORIG-DEST-HH:mm)
      */
     FlightScheduleDataDTO createFlight(String originIcao, String destIcao,
                                        LocalTime depTimeLocal, LocalTime arrTimeLocal, int capacity);
+
+    /**
+     * Resincroniza el catálogo en memoria con lo que hay en BD y propaga el diff (altas,
+     * bajas y cambios) a las sesiones activas. Pensado para la carga masiva por archivo,
+     * que escribe directo en BD sin pasar por los métodos individuales.
+     */
+    void reloadCatalogFromDb();
 
     /**
      * Modifica horario y/o capacidad de un schedule existente. Campos {@code null} se

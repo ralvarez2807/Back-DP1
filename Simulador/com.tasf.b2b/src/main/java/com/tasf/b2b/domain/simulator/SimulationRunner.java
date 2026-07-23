@@ -138,6 +138,7 @@ public class SimulationRunner implements Runnable {
             case FlightDepartureEvent  e -> handleFlightDeparture(e);
             case FlightArrivalEvent    e -> handleFlightArrival(e);
             case FlightCancelledEvent  e -> handleFlightCancelled(e);
+            case FlightScheduleAddedEvent   e -> handleFlightScheduleAdded(e);
             case FlightScheduleUpdatedEvent e -> handleFlightScheduleUpdated(e);
             case FlightScheduleRemovedEvent e -> handleFlightScheduleRemoved(e);
             case BaggagePickupEvent    e -> handleBaggagePickup(e);
@@ -306,6 +307,36 @@ public class SimulationRunner implements Runnable {
         }
 
         runOptimizationCycle();  // ← Agregar aquí
+    }
+
+    // Da de alta un schedule recurrente en esta sesión (LE-10). Lo registra para las próximas
+    // expansiones y materializa sus instancias dentro de la ventana ya expandida, programando
+    // salida/llegada de cada una. Al final corre un ciclo de optimización: las maletas
+    // pendientes pueden aprovechar la ruta nueva de inmediato.
+    private void handleFlightScheduleAdded(FlightScheduleAddedEvent e) {
+        var schedule = e.getSchedule();
+
+        List<FlightEdge> newFlights = graph.expandSingleSchedule(schedule, clock.now());
+        log("Schedule agregado: " + schedule.getId()
+                + " (" + newFlights.size() + " instancia(s) dentro del horizonte)");
+
+        for (FlightEdge fe : newFlights) {
+            Instant dep = fe.getFromNode().getTimeUtc();
+            Instant arr = fe.getToNode().getTimeUtc();
+
+            submit(new FlightDepartureEvent(dep, fe, clock));
+            submit(new FlightArrivalEvent(arr, fe, clock));
+
+            publisher.publish(new FlightScheduledDTO(
+                    clock.now(),
+                    fe.getIdFlightEdge(),
+                    fe.getFromNode().getIcao(),
+                    fe.getToNode().getIcao(),
+                    dep,
+                    fe.getCapacity()));
+        }
+
+        if (!newFlights.isEmpty()) runOptimizationCycle();
     }
 
     // Modifica el horario/capacidad de un schedule recurrente (LE-12). Cancela las

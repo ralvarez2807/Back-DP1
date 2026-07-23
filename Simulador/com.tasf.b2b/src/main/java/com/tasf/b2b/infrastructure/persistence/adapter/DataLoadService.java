@@ -1,5 +1,6 @@
 package com.tasf.b2b.infrastructure.persistence.adapter;
 
+import com.tasf.b2b.application.port.in.FlightAdminPort;
 import com.tasf.b2b.domain.model.graph.immovable.AirportDataDTO;
 import com.tasf.b2b.domain.model.graph.immovable.DeliveryTypeValues;
 import com.tasf.b2b.domain.model.graph.immovable.FlightScheduleDataDTO;
@@ -37,16 +38,19 @@ public class DataLoadService {
     private final AirportJpaRepository            airportRepo;
     private final FlightScheduleJpaRepository     flightRepo;
     private final SimulationShipmentJpaRepository shipmentRepo;
+    private final FlightAdminPort                 flightAdminPort;
 
     @PersistenceContext
     private EntityManager em;
 
     public DataLoadService(AirportJpaRepository airportRepo,
                            FlightScheduleJpaRepository flightRepo,
-                           SimulationShipmentJpaRepository shipmentRepo) {
-        this.airportRepo  = airportRepo;
-        this.flightRepo   = flightRepo;
-        this.shipmentRepo = shipmentRepo;
+                           SimulationShipmentJpaRepository shipmentRepo,
+                           FlightAdminPort flightAdminPort) {
+        this.airportRepo     = airportRepo;
+        this.flightRepo      = flightRepo;
+        this.shipmentRepo    = shipmentRepo;
+        this.flightAdminPort = flightAdminPort;
     }
 
     // ── Resultado común ───────────────────────────────────────────────────────
@@ -95,6 +99,13 @@ public class DataLoadService {
         if (replace) flightRepo.deleteAll();
 
         flightRepo.saveAll(entities);
+        flightRepo.flush();   // el catálogo se relee desde BD justo abajo
+
+        // Sin esto los vuelos quedarían solo en BD: la lista compartida en memoria se
+        // llena una única vez al arrancar la app, y es de ahí (no de la BD) que cada
+        // sesión construye su grafo.
+        flightAdminPort.reloadCatalogFromDb();
+
         return new LoadResult(entities.size(), List.of(), List.of());
     }
 

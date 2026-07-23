@@ -32,7 +32,10 @@ public class RouteFinder {
         PriorityQueue<State> pq = new PriorityQueue<>(Comparator.comparing(s -> s.time));
         Map<String, Instant> bestArrival = new HashMap<>();
 
-        Instant startTime = baggage.availableFrom().plusSeconds(pickupMin * 60L);
+        // availableFrom ya trae incorporado el margen de escala cuando corresponde
+        // (ver AlnsProjectionBuilder.availableFrom): una maleta recién registrada está
+        // lista de inmediato, una en escala espera minConnectionMinutes tras aterrizar.
+        Instant startTime = baggage.availableFrom();
         pq.offer(new State(startTime, baggage.currentIcao(), List.of(), 0));
 
         while (!pq.isEmpty()) {
@@ -92,7 +95,8 @@ public class RouteFinder {
                 Comparator.comparingInt((State s) -> s.hops).thenComparing(s -> s.time));
         Map<String, Integer> bestHops = new HashMap<>();
 
-        Instant startTime = baggage.availableFrom().plusSeconds(pickupMin * 60L);
+        // Mismo criterio que findRoute: el margen de escala ya viene en availableFrom.
+        Instant startTime = baggage.availableFrom();
         pq.offer(new State(startTime, baggage.currentIcao(), List.of(), 0));
 
         while (!pq.isEmpty()) {
@@ -140,13 +144,13 @@ public class RouteFinder {
      */
     public static List<FlightSnapshot> findFastestIgnoringDeadline(BaggageState baggage,
                                                                    AlnsProjection projection) {
-        int pickupMin  = projection.pickupMinutes();
         int connectMin = projection.minConnectionMinutes();
 
         PriorityQueue<State> pq = new PriorityQueue<>(Comparator.comparing(s -> s.time));
         Map<String, Instant> bestArrival = new HashMap<>();
 
-        Instant startTime = baggage.availableFrom().plusSeconds(pickupMin * 60L);
+        // Mismo criterio que findRoute: el margen de escala ya viene en availableFrom.
+        Instant startTime = baggage.availableFrom();
         pq.offer(new State(startTime, baggage.currentIcao(), List.of(), 0));
 
         while (!pq.isEmpty()) {

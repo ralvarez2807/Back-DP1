@@ -52,11 +52,13 @@ Campos internos (hardcodeados, no expuestos en la API)
 │                      │  fijo  │                                     │
 ├──────────────────────┼────────┼─────────────────────────────────────┤
 │ minConnectionMinutes │ 10     │ Tiempo mínimo de conexión entre     │
-│                      │        │ vuelos para una maleta en escala    │
+│                      │        │ vuelos para una maleta en escala.   │
+│                      │        │ No aplica a envíos recién           │
+│                      │        │ registrados: salen sin margen       │
 ├──────────────────────┼────────┼─────────────────────────────────────┤
-│                      │        │ Tiempo desde que llega el vuelo     │
-│ pickupMinutes        │ 10     │ hasta que la maleta está disponible │
-│                      │        │  para recogida                      │
+│                      │        │ Tiempo desde que llega el vuelo al  │
+│ pickupMinutes        │ 15     │ destino final hasta que la maleta   │
+│                      │        │ se considera entregada              │
 └──────────────────────┴────────┴─────────────────────────────────────┘
 
 ---

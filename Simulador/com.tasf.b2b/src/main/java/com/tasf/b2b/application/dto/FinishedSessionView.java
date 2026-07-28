@@ -18,6 +18,14 @@ import java.util.List;
  *    colapso (deadline vencido / maleta sin ruta) — se conserva el último
  *    snapshot bueno anterior a la falla. Solo status y collapseReason reflejan
  *    el colapso.
+ *
+ * {@code report}: foto de GET /reports/summary tomada en el mismo instante en
+ * que se arma este registro (ver RunSimulationUseCase, fin natural/colapso y
+ * stop()) — mientras la sesión todavía está en el SimulationRegistry, así
+ * QuerySimulationUseCase.getReport() puede devolverla como respaldo una vez
+ * que el registry ya evictó la sesión (15s) pero este caché todavía no expiró
+ * (5 min). Null en el snapshot periódico "RUNNING" (no es un cierre, y
+ * mientras corre getReport() igual puede calcularlo en vivo desde el registry).
  */
 public record FinishedSessionView(
         String                  id,
@@ -25,4 +33,5 @@ public record FinishedSessionView(
         String                  status,          // RUNNING | COMPLETED | COLLAPSED | STOPPED
         Instant                 endedAt,         // instante de este registro (no necesariamente el fin real)
         String                  collapseReason,  // solo si status = COLLAPSED
-        List<BaggageRouteView>  assignedRoutes) {} // última planificación EXITOSA (nunca la que colapsó)
+        List<BaggageRouteView>  assignedRoutes,  // última planificación EXITOSA (nunca la que colapsó)
+        ReportView              report) {}       // null salvo en el registro terminal (COMPLETED/COLLAPSED/STOPPED)

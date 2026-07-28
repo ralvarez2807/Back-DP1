@@ -2,6 +2,7 @@ package com.tasf.b2b.application.usecase;
 
 import com.tasf.b2b.application.dto.BaggageRouteView;
 import com.tasf.b2b.application.dto.FinishedSessionView;
+import com.tasf.b2b.application.dto.ReportView;
 import com.tasf.b2b.application.port.in.DisruptionCommand;
 import com.tasf.b2b.application.port.in.InjectShipmentCommand;
 import com.tasf.b2b.application.port.in.InjectShipmentResult;
@@ -252,9 +253,17 @@ public class RunSimulationUseCase implements SimulationControlPort {
                                 .orElseGet(() -> query.buildAllRoutes(session)) // colapsó antes del primer snapshot
                         : query.buildAllRoutes(session);
 
+                // Foto del reporte (métricas + tiempos) ANTES de programar la
+                // liberación del registry — best effort: si algo falla, no debe
+                // frenar el cierre de la sesión, solo faltará el respaldo en RAM.
+                ReportView report = null;
+                try {
+                    report = query.getReport(session.getId());
+                } catch (Exception ignored) { /* respaldo best-effort, no crítico */ }
+
                 finishedSessionCache.record(new FinishedSessionView(
                         session.getId(), session.getUsername(), finalStatus.name(),
-                        Instant.now(), collapseReason, assignedRoutes));
+                        Instant.now(), collapseReason, assignedRoutes, report));
 
                 // Aviso de cierre por WS: el cliente sabe a ciencia cierta que la
                 // simulación terminó (y por qué) sin depender de polling. Se publica
@@ -337,7 +346,7 @@ public class RunSimulationUseCase implements SimulationControlPort {
                 if (!runner.isRunning()) return;
                 finishedSessionCache.record(new FinishedSessionView(
                         session.getId(), session.getUsername(), "RUNNING",
-                        Instant.now(), null, query.buildAllRoutes(session)));
+                        Instant.now(), null, query.buildAllRoutes(session), null));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
@@ -423,9 +432,13 @@ public class RunSimulationUseCase implements SimulationControlPort {
         SimulationSession session = registry.findOrThrow(sessionId);
         // Guardar el resultado ANTES de interrumpir/remover: usa la sesión ya en
         // mano, así que no depende de que siga en el registry.
+        ReportView report = null;
+        try {
+            report = query.getReport(sessionId);
+        } catch (Exception ignored) { /* respaldo best-effort, no crítico */ }
         finishedSessionCache.record(new FinishedSessionView(
                 session.getId(), session.getUsername(), SimulationSession.SimStatus.STOPPED.name(),
-                Instant.now(), null, query.buildAllRoutes(session)));
+                Instant.now(), null, query.buildAllRoutes(session), report));
         // Aviso de cierre por WS, publicado ANTES de interruptAll(): el close()
         // que dispara interruptAll() flushea la cola antes de cerrar los sockets,
         // así que este mensaje llega como el último antes del cierre.

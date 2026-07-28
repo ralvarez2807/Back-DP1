@@ -74,8 +74,8 @@ public class SpringConfig {
     }
 
     @Bean
-    public QuerySimulationUseCase querySimulationUseCase(SimulationRegistry registry) {
-        return new QuerySimulationUseCase(registry);
+    public QuerySimulationUseCase querySimulationUseCase(SimulationRegistry registry, FinishedSessionCache finishedSessionCache) {
+        return new QuerySimulationUseCase(registry, finishedSessionCache);
     }
 
     @Bean

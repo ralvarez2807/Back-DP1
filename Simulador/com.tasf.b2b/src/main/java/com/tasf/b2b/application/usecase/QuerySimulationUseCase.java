@@ -57,9 +57,11 @@ import java.util.stream.Collectors;
 public class QuerySimulationUseCase implements SimulationQueryPort {
 
     private final SimulationRegistry registry;
+    private final FinishedSessionCache finishedSessionCache;
 
-    public QuerySimulationUseCase(SimulationRegistry registry) {
+    public QuerySimulationUseCase(SimulationRegistry registry, FinishedSessionCache finishedSessionCache) {
         this.registry = registry;
+        this.finishedSessionCache = finishedSessionCache;
     }
 
     // ── getSession ────────────────────────────────────────────────────────────
@@ -959,7 +961,17 @@ public class QuerySimulationUseCase implements SimulationQueryPort {
 
     @Override
     public ReportView getReport(String sessionId) {
-        SimulationSession session = registry.findOrThrow(sessionId);
+        SimulationSession session;
+        try {
+            session = registry.findOrThrow(sessionId);
+        } catch (IllegalArgumentException notInRegistry) {
+            // La sesión ya terminó y el registry la evictó (15s de gracia) — cae al
+            // respaldo en RAM: la foto tomada en el mismo instante del cierre
+            // (RunSimulationUseCase), disponible hasta 5 min después de terminar.
+            ReportView cached = finishedSessionCache.findOrThrow(sessionId).report();
+            if (cached == null) throw notInRegistry; // sesión cacheada pero sin foto de reporte (caso "RUNNING" viejo)
+            return cached;
+        }
         SimulationRunner  runner  = session.getRunner();
         SpaceTimeGraph    graph   = session.getGraph();
         Instant           simNow  = runner.getClock().now();
